@@ -1,0 +1,6 @@
+*.pyc
+ckpts
+evaluation
+models/detector/ops/build/
+models/detector/ops/MultiScaleDeformableAttention.egg-info
+models/detector/ops/MultiScaleDeformableAttention.cp39-win_amd64.pyd
