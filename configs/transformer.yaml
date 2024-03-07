@@ -6,8 +6,8 @@ logs_folder: './ckpts/logs/'
 model_path: './ckpts/transformer'
 
 optimizer:
-  batch_size: 32
-  num_workers: 4
+  batch_size: 48
+  num_workers: 8
 
 dataset:
   root_path: '../mscoco'

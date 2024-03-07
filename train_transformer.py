@@ -1,5 +1,6 @@
 import random
 import evaluation
+from evaluation import Cider
 from data.dataset import build_coco_dataloaders
 from models.detector import build_detector
 from models.transformer import TransformerEncoder, TransformerDecoder, ScaledDotProductAttention, Transformer
@@ -8,6 +9,8 @@ import torch
 from torch.optim import Adam
 from torch.optim.lr_scheduler import LambdaLR
 from torch.nn import NLLLoss
+import warnings
+warnings.filterwarnings("ignore")
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 import os
@@ -17,8 +20,8 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+test = False
 random.seed(1234)
 torch.manual_seed(1234)
 np.random.seed(1234)
@@ -42,6 +45,9 @@ def evaluate_loss(model, dataloader, loss_fn, text_field):
 
                 pbar.set_postfix(loss=running_loss / (it + 1))
                 pbar.update()
+
+                if test:
+                    break
 
     val_loss = running_loss / len(dataloader)
     return val_loss
@@ -93,6 +99,9 @@ def train_xe(model, dataloader, optim, text_field):
 
             pbar.set_postfix(loss=running_loss / (it + 1))
             pbar.update()
+
+            if test:
+                break
     
     loss = running_loss / len(dataloader)
     return loss
@@ -135,6 +144,8 @@ def train_scst(model, dataloader, optim, cider, text_field):
             pbar.set_postfix(loss=running_loss / (it + 1), reward=running_reward / (it + 1),
                              reward_baseline=running_reward_baseline / (it + 1))
             pbar.update()
+            if test:
+                break
 
     loss = running_loss / len(dataloader)
     reward = running_reward / len(dataloader)
@@ -151,6 +162,7 @@ if __name__ == '__main__':
     writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.exp_name))
 
     dataloaders, text_field = build_coco_dataloaders(args, device)
+    cider_train = Cider()
 
     # Model and dataloaders
     if args.mode == 'transformer':
@@ -170,12 +182,12 @@ if __name__ == '__main__':
         base_lr = 0.0001
         print("s:", s)
         if s == 0:
-            lr = base_lr / 4
-        elif s <= 3:
-            lr = base_lr * s / 4
-        elif s <= 10:
+            lr = base_lr / 2
+        # elif s <= 3:
+        #     lr = base_lr * s / 4
+        elif s <= 20:
             lr = base_lr
-        elif s <= 12:
+        elif s <= 40:
             lr = base_lr * 0.2
         else:
             lr = base_lr * 0.2 * 0.2
@@ -224,7 +236,6 @@ if __name__ == '__main__':
             print('Resuming from epoch %d, validation loss %f, and best cider %f' % (
                 data['epoch'], data['val_loss'], data['best_cider']))
             print('patience:', data['patience'])
-            print('num_workers:', args.workers)
 
     print("Training starts")
     for e in range(start_epoch, start_epoch + 100):

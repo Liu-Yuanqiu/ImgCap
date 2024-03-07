@@ -17,27 +17,22 @@ class DictionaryCollator:
         self.use_cache = use_cache
 
     def __call__(self, batch):
-        imgs = [item[0] for item in batch]
-        captions = [item[1] for item in batch]
-        image_ids = [item[2] for item in batch]
+        captions = [item[0] for item in batch]
+        image_ids = [item[1] for item in batch]
 
         outputs = {}
         if self.use_cache:
-            grid_shape = imgs[0]['grid'].shape
-            mask_shape = imgs[0]['mask'].shape
-            new_grid_shape = [len(imgs)] + list(grid_shape)
-            new_mask_shape = [len(imgs)] + list(mask_shape)
-            grid = torch.zeros(new_grid_shape, dtype=torch.float32, device=self.device)
-            mask = torch.ones(new_mask_shape, dtype=torch.bool, device=self.device)
-
-            for img, g, m in zip(imgs, grid, mask):
-                g.copy_(torch.from_numpy(img['grid']))
-                m.copy_(torch.from_numpy(img['mask']))
+            grid = [item[2] for item in batch]
+            mask = [item[3] for item in batch]
+            grid = torch.from_numpy(np.stack(grid, 0)).to(self.device)
+            mask = torch.from_numpy(np.stack(mask, 0)).to(self.device)
+            
             samples = {}
             samples['grid'] = grid
             samples['mask'] = mask
             outputs['samples'] = samples
         else:
+            imgs = [item[2] for item in batch]
             outputs['samples'] = nested_tensor_from_tensor_list(imgs).to(self.device)
 
         outputs['captions'] = captions
@@ -82,23 +77,21 @@ class DictionaryDataset:
         id = self.examples[index]['id']
         filepath = self.examples[index]['image']
         text = self.examples[index]['text']
+        caption = text
 
         if self.use_cache:
             img = {}
             with np.load(filepath, allow_pickle=True) as data_grid:
                 grid = data_grid['grid']
                 grid = np.array(grid).astype('float32')
-                grid_mask = data_grid['mask']
-                grid_mask = np.array(grid_mask).astype('bool')
-            img['grid'] = grid
-            img['mask'] = grid_mask
+                mask = data_grid['mask']
+                mask = np.array(mask).astype('bool')
+            return caption, id, grid, mask
         else:
             img = Image.open(filepath).convert('RGB')
             if self.transform is not None:
                 img = self.transform(img)
-        
-        caption = text
-        return img, caption, id
+            return caption, id, img
     
     def __len__(self):
         return len(self.examples)
@@ -114,24 +107,22 @@ class PairedDataset:
         filepath = self.examples[index]['image']
         text = self.examples[index]['text']
         token = self.examples[index]['token']
-        
+        caption = token
+
         if self.use_cache:
             img = {}
             with np.load(filepath, allow_pickle=True) as data_grid:
                 grid = data_grid['grid']
                 grid = np.array(grid).astype('float32')
-                grid_mask = data_grid['mask']
-                grid_mask = np.array(grid_mask).astype('bool')
-            img['grid'] = grid
-            img['mask'] = grid_mask
+                mask = data_grid['mask']
+                mask = np.array(mask).astype('bool')
+            return caption, id, grid, mask
         else:
             img = Image.open(filepath).convert('RGB')
             if self.transform is not None:
                 img = self.transform(img)
+            return caption, id, img
         
-        caption = token
-        return img, caption, id
-    
     def __len__(self):
         return len(self.examples)
 
@@ -179,9 +170,9 @@ class COCO:
             anns = dataset_val2014.imgToAnns[id_val]
             anns = [an["caption"] for an in anns]
             if use_cache:
-                filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id_train)+".npz")
+                filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id_val)+".npz")
             else:
-                filename = dataset_train2014.loadImgs(id_train)[0]['file_name']
+                filename = dataset_train2014.loadImgs(id_val)[0]['file_name']
                 filepath = os.path.join(root_path, "images", "train2014", filename)
             self.val_dict_samples.append({"id":id_val, "image": filepath, "text":anns})
             for ann in anns:
@@ -192,9 +183,9 @@ class COCO:
             anns = dataset_val2014.imgToAnns[id_test]
             anns = [an["caption"] for an in anns]
             if use_cache:
-                filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id_train)+".npz")
+                filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id_test)+".npz")
             else:
-                filename = dataset_train2014.loadImgs(id_train)[0]['file_name']
+                filename = dataset_train2014.loadImgs(id_test)[0]['file_name']
                 filepath = os.path.join(root_path, "images", "train2014", filename)
             self.test_dict_samples.append({"id":id_test, "image": filepath, "text":anns})
 
