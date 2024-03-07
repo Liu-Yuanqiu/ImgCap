@@ -33,10 +33,13 @@ class Transformer(CaptioningModel):
                 nn.init.xavier_uniform_(p)
 
     def forward(self, images, seq):
-        # images = self.embed_image(images)
-        outputs = self.detector(images)
-        gri_feat, gri_mask = outputs['gri_feat'], outputs['gri_mask']
-        gri_feat = self.embed_image(gri_feat)
+        if self.detector is None:
+            gri_feat, gri_mask = images['grid'], images['mask']
+            gri_feat = self.embed_image(gri_feat)
+        else:
+            outputs = self.detector(images)
+            gri_feat, gri_mask = outputs['gri_feat'], outputs['gri_mask']
+            gri_feat = self.embed_image(gri_feat)
         mask_enc = gri_mask
         enc_output = self.encoder(gri_feat, mask_enc)
         dec_output = self.decoder(seq, enc_output, mask_enc)
@@ -52,10 +55,12 @@ class Transformer(CaptioningModel):
             raise NotImplementedError
         elif mode == 'feedback':
             if t == 0:
-                # visual = self.embed_image(visual)
-                outputs = self.detector(visual)
-                gri_feat, gri_mask = outputs['gri_feat'], outputs['gri_mask']
-                gri_feat = self.embed_image(gri_feat)
+                if self.detector is None:
+                    gri_feat, gri_mask = visual['grid'], visual['mask']
+                    gri_feat = self.embed_image(gri_feat)
+                else:
+                    outputs = self.detector(visual)
+                    gri_feat, gri_mask = outputs['gri_feat'], outputs['gri_mask']
                 self.mask_enc = gri_mask
                 self.enc_output = self.encoder(gri_feat, gri_mask)
                 if isinstance(gri_feat, torch.Tensor):

@@ -3,7 +3,7 @@
 ## Installation
 1. Download spacy data by executing the following command:
 ```
-python -m spacy download en
+python -m spacy download en_core_web_sm
 ```
 
 2. Add evaluation module from [evaluation](https://github.com/aimagelab/meshed-memory-transformer/tree/master/evaluation).

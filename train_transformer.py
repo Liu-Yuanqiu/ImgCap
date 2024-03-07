@@ -17,6 +17,8 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
 random.seed(1234)
 torch.manual_seed(1234)
 np.random.seed(1234)
@@ -29,7 +31,7 @@ def evaluate_loss(model, dataloader, loss_fn, text_field):
     with tqdm(desc='Epoch %d - validation' % e, unit='it', total=len(dataloader)) as pbar:
         with torch.no_grad():
             for it, batch in enumerate(dataloader):
-                image_id, samples, captions = batch['image_id'], batch['samples'].to(device), batch['captions'].to(device)
+                image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
                 
                 out = model(samples, captions)
                 captions = captions[:, 1:].contiguous()
@@ -52,7 +54,7 @@ def evaluate_metrics(model, dataloader, text_field):
     gts = {}
     with tqdm(desc='Epoch %d - evaluation' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
-            image_id, samples, captions = batch['image_id'], batch['samples'].to(device), batch['captions']
+            image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
             with torch.no_grad():
                 out, _ = model.beam_search(samples, 20, text_field.vocab.stoi['<eos>'], 5, out_size=1)
             caps_gen = text_field.decode(out, join_words=False)
@@ -75,7 +77,7 @@ def train_xe(model, dataloader, optim, text_field):
     running_loss = .0
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
-            image_id, samples, captions = batch['image_id'], batch['samples'].to(device), batch['captions'].to(device)
+            image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
 
             out = model(samples, captions)
             optim.zero_grad()
@@ -107,19 +109,19 @@ def train_scst(model, dataloader, optim, cider, text_field):
     beam_size = 5
 
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
-        for it, ((detections, pixels), caps_gt) in enumerate(dataloader):
-            detections = detections.to(device)
-            pixels = pixels.to(device)
-            outs, log_probs = model.beam_search(detections, pixels, seq_len, text_field.vocab.stoi['<eos>'],
+        for it, batch in enumerate(dataloader):
+            image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
+            outs, log_probs = model.beam_search(samples, seq_len, text_field.vocab.stoi['<eos>'],
                                                 beam_size, out_size=beam_size)
             optim.zero_grad()
 
             # Rewards
             caps_gen = text_field.decode(outs.view(-1, seq_len))
+            caps_gt = captions
             caps_gt = list(itertools.chain(*([c, ] * beam_size for c in caps_gt)))
             caps_gen, caps_gt = tokenizer_pool.map(evaluation.PTBTokenizer.tokenize, [caps_gen, caps_gt])
             reward = cider.compute_score(caps_gt, caps_gen)[1].astype(np.float32)
-            reward = torch.from_numpy(reward).to(device).view(detections.shape[0], beam_size)
+            reward = torch.from_numpy(reward).to(device).view(outs.shape[0], beam_size)
             reward_baseline = torch.mean(reward, -1, keepdim=True)
             loss = -torch.mean(log_probs, -1) * (reward - reward_baseline)
 
@@ -141,6 +143,7 @@ def train_scst(model, dataloader, optim, cider, text_field):
 
 
 if __name__ == '__main__':
+    multiprocessing.set_start_method('spawn')
     device = torch.device('cuda')
     args = OmegaConf.load('configs/transformer.yaml')
     print(args)
@@ -151,7 +154,10 @@ if __name__ == '__main__':
 
     # Model and dataloaders
     if args.mode == 'transformer':
-        detector = build_detector(args)
+        if args.dataset.use_cache:
+            detector = None
+        else:
+            detector = build_detector(args)
         encoder = TransformerEncoder(3, 0, attention_module=ScaledDotProductAttention)
         decoder = TransformerDecoder(len(text_field.vocab), 54, 3, text_field.vocab.stoi['<pad>'])
         model = Transformer(text_field.vocab.stoi['<bos>'], detector, encoder, decoder).to(device)
@@ -159,7 +165,7 @@ if __name__ == '__main__':
     for n, p in model.named_parameters():
         if 'detector' in n:
             p.requires_grad = False
-            
+
     def lambda_lr(s):
         base_lr = 0.0001
         print("s:", s)

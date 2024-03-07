@@ -6,11 +6,12 @@ logs_folder: './ckpts/logs/'
 model_path: './ckpts/transformer'
 
 optimizer:
-  batch_size: 4
+  batch_size: 32
   num_workers: 4
 
 dataset:
   root_path: '../mscoco'
+  use_cache: true
   vocab_path: '../mscoco/txt/coco_vocabulary.txt'
   transform:
     size: [384, 640] # (h, w)

@@ -31,8 +31,6 @@ class BeamSearch(object):
         return fn
 
     def _expand_visual(self, visual: utils.TensorOrSequence, cur_beam_size: int, selected_beam: torch.Tensor):
-        print(visual.tensors.shape)
-        print(visual.mask.shape)
         if isinstance(visual, torch.Tensor):
             visual_shape = visual.shape
             visual_exp_shape = (self.b_s, cur_beam_size) + visual_shape[1:]
