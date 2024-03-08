@@ -20,7 +20,7 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 test = False
 random.seed(1234)
 torch.manual_seed(1234)
@@ -185,9 +185,9 @@ if __name__ == '__main__':
             lr = base_lr / 2
         # elif s <= 3:
         #     lr = base_lr * s / 4
-        elif s <= 20:
+        elif s <= 5:
             lr = base_lr
-        elif s <= 40:
+        elif s <= 10:
             lr = base_lr * 0.2
         else:
             lr = base_lr * 0.2 * 0.2
@@ -214,6 +214,7 @@ if __name__ == '__main__':
     patience = 0
     start_epoch = 0
 
+    args.model_path = os.path.join("./ckpts", args.exp_name)
     if args.resume_last or args.resume_best:
         if args.resume_last:
             fname = os.path.join(args.model_path, '%s_last.pth' % args.exp_name)

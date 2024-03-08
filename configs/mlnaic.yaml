@@ -1,6 +1,6 @@
-exp_name: 'transformer'
-mode: 'transformer'
-resume_last: true
+exp_name: '0308'
+mode: 'mlnaic'
+resume_last: false
 resume_best: false
 logs_folder: './ckpts/logs/'
 
