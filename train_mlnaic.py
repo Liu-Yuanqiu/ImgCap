@@ -1,10 +1,10 @@
 import random
 import evaluation
 from evaluation import Cider
-from data.dataset import build_coco_dataloaders
+from data.dataset_kd import build_coco_dataloaders
 from models.detector import build_detector
-from models.transformer import TransformerEncoder, TransformerDecoder, Transformer
-
+from models.mlnaic import TransformerEncoder, TransformerDecoder, Transformer
+from models.losses import MLCrossEntropy
 import torch
 from torch.optim import Adam
 from torch.optim.lr_scheduler import LambdaLR
@@ -20,7 +20,7 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 test = False
 random.seed(1234)
 torch.manual_seed(1234)
@@ -34,12 +34,16 @@ def evaluate_loss(model, dataloader, loss_fn, text_field):
     with tqdm(desc='Epoch %d - validation' % e, unit='it', total=len(dataloader)) as pbar:
         with torch.no_grad():
             for it, batch in enumerate(dataloader):
-                image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
-                
-                out = model(samples, captions)
-                captions = captions[:, 1:].contiguous()
-                out = out[:, :-1].contiguous()
-                loss = loss_fn(out.view(-1, len(text_field.vocab)), captions.view(-1))
+                image_id, samples, labels, label_masks = batch['image_id'], batch['samples'], batch['labels'], batch['label_masks']
+
+                out = model(samples)
+                optim.zero_grad()
+                min_len = min(out.shape[1], labels.shape[1])
+                labels = labels[:, :min_len].contiguous()
+                out = out[:, :min_len].contiguous()
+                label_masks = label_masks[:, :min_len].contiguous()
+
+                loss = loss_fn(out, labels, label_masks)
                 this_loss = loss.item()
                 running_loss += this_loss
 
@@ -52,7 +56,6 @@ def evaluate_loss(model, dataloader, loss_fn, text_field):
     val_loss = running_loss / len(dataloader)
     return val_loss
 
-
 def evaluate_metrics(model, dataloader, text_field):
     import itertools
     model.eval()
@@ -60,11 +63,11 @@ def evaluate_metrics(model, dataloader, text_field):
     gts = {}
     with tqdm(desc='Epoch %d - evaluation' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
-            image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
+            image_id, samples, caps_gt = batch['image_id'], batch['samples'], batch['caps_gt']
             with torch.no_grad():
-                out, _ = model.beam_search(samples, 20, text_field.vocab.stoi['<eos>'], 5, out_size=1)
-            caps_gen = text_field.decode(out, join_words=False)
-            caps_gt = captions
+                out = model(samples)
+            _, ids = torch.max(out, dim=-1)
+            caps_gen = text_field.decode(ids, join_words=False)
             for i, (gts_i, gen_i) in enumerate(zip(caps_gt, caps_gen)):
                 gen_i = ' '.join([k for k, g in itertools.groupby(gen_i)])
                 gen['%d_%d' % (it, i)] = [gen_i, ]
@@ -76,21 +79,22 @@ def evaluate_metrics(model, dataloader, text_field):
     scores, _ = evaluation.compute_scores(gts, gen)
     return scores
 
-
 def train_xe(model, dataloader, optim, text_field):
     # Training with cross-entropy
     model.train()
     running_loss = .0
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
-            image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
+            image_id, samples, labels, label_masks = batch['image_id'], batch['samples'], batch['labels'], batch['label_masks']
 
-            out = model(samples, captions)
+            out = model(samples)
             optim.zero_grad()
-            captions_gt = captions[:, 1:].contiguous()
-            out = out[:, :-1].contiguous()
+            min_len = min(out.shape[1], labels.shape[1])
+            labels = labels[:, :min_len].contiguous()
+            out = out[:, :min_len].contiguous()
+            label_masks = label_masks[:, :min_len].contiguous()
 
-            loss = loss_fn(out.view(-1, len(text_field.vocab)), captions_gt.view(-1))
+            loss = loss_fn(out, labels, label_masks)
             loss.backward()
 
             optim.step()
@@ -105,7 +109,6 @@ def train_xe(model, dataloader, optim, text_field):
     
     loss = running_loss / len(dataloader)
     return loss
-
 
 def train_scst(model, dataloader, optim, cider, text_field):
     # Training with self-critical
@@ -156,23 +159,21 @@ def train_scst(model, dataloader, optim, cider, text_field):
 if __name__ == '__main__':
     multiprocessing.set_start_method('spawn')
     device = torch.device('cuda')
-    args = OmegaConf.load('configs/transformer.yaml')
+    args = OmegaConf.load('configs/mlnaic.yaml')
     print(args)
 
-    writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.exp_name))
+    writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.mode, args.exp_name))
 
     dataloaders, text_field = build_coco_dataloaders(args, device)
     cider_train = Cider()
 
-    # Model and dataloaders
-    if args.mode == 'transformer':
-        if args.dataset.use_cache:
-            detector = None
-        else:
-            detector = build_detector(args)
-        encoder = TransformerEncoder(3, text_field.vocab.stoi['<pad>'])
-        decoder = TransformerDecoder(len(text_field.vocab), 54, 3, text_field.vocab.stoi['<pad>'])
-        model = Transformer(text_field.vocab.stoi['<bos>'], detector, encoder, decoder).to(device)
+    if args.dataset.use_cache:
+        detector = None
+    else:
+        detector = build_detector(args)
+    encoder = TransformerEncoder(3, text_field.vocab.stoi['<pad>'])
+    decoder = TransformerDecoder(len(text_field.vocab), 54, 3, text_field.vocab.stoi['<pad>'])
+    model = Transformer(text_field.vocab.stoi['<bos>'], detector, encoder, decoder).to(device)
 
     for n, p in model.named_parameters():
         if 'detector' in n:
@@ -183,8 +184,6 @@ if __name__ == '__main__':
         print("s:", s)
         if s == 0:
             lr = base_lr / 2
-        # elif s <= 3:
-        #     lr = base_lr * s / 4
         elif s <= 5:
             lr = base_lr
         elif s <= 10:
@@ -208,13 +207,13 @@ if __name__ == '__main__':
     optim = Adam(model.parameters(), lr=1, betas=(0.9, 0.98))
     scheduler = LambdaLR(optim, lambda_lr)
 
-    loss_fn = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
+    loss_fn = MLCrossEntropy()
     use_rl = False
     best_cider = .0
     patience = 0
     start_epoch = 0
 
-    args.model_path = os.path.join("./ckpts", args.exp_name)
+    args.model_path = os.path.join("./ckpts", args.mode, args.exp_name)
     if args.resume_last or args.resume_best:
         if args.resume_last:
             fname = os.path.join(args.model_path, '%s_last.pth' % args.exp_name)
@@ -244,7 +243,7 @@ if __name__ == '__main__':
             train_loss = train_xe(model, dataloaders['train'], optim, text_field)
             writer.add_scalar('data/train_loss', train_loss, e)
         else:
-            train_loss, reward, reward_baseline = train_scst(model, dataloaders['train_dict'], optim, cider_train, text_field)
+            train_loss, reward, reward_baseline = train_scst(model, dataloaders['train'], optim, cider_train, text_field)
             writer.add_scalar('data/train_loss', train_loss, e)
             writer.add_scalar('data/reward', reward, e)
             writer.add_scalar('data/reward_baseline', reward_baseline, e)
@@ -254,7 +253,7 @@ if __name__ == '__main__':
         writer.add_scalar('data/val_loss', val_loss, e)
 
         # Validation scores
-        scores = evaluate_metrics(model, dataloaders['valid_dict'], text_field)
+        scores = evaluate_metrics(model, dataloaders['valid'], text_field)
         print("Validation scores", scores)
         val_cider = scores['CIDEr']
         writer.add_scalar('data/val_cider', val_cider, e)
@@ -264,7 +263,7 @@ if __name__ == '__main__':
         writer.add_scalar('data/val_rouge', scores['ROUGE'], e)
 
         # Test scores
-        scores = evaluate_metrics(model, dataloaders['test_dict'], text_field)
+        scores = evaluate_metrics(model, dataloaders['test'], text_field)
         print("Test scores", scores)
         test_cider = scores['CIDEr']
         writer.add_scalar('data/test_cider', test_cider, e)

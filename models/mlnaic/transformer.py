@@ -2,39 +2,22 @@ import torch
 from torch import nn
 import copy
 from models.containers import ModuleList
-from ..captioning_model1 import CaptioningModel1
-
-# fuse_bn_1+2
-class Flatten(nn.Module):
-    def __init__(self):
-        super(Flatten,self).__init__()
- 
-    def forward(self, x):
-        return x.view(x.size(0), 133, -1).permute(0, 2, 1)
+from ..captioning_model import CaptioningModel
 
 
-class Difnet(CaptioningModel1):
-    def __init__(self, bos_idx, encoder, decoder):
-        super(Difnet, self).__init__()
+class Transformer(CaptioningModel):
+    def __init__(self, bos_idx, detector, encoder, decoder):
+        super(Transformer, self).__init__()
         self.bos_idx = bos_idx
+        self.detector = detector
         self.encoder = encoder
         self.decoder = decoder
         # image embed
         self.embed_image = nn.Sequential(
-                nn.Linear(2048, 512),
+                nn.Linear(1024, 512),
                 nn.ReLU(),
                 nn.Dropout(p=0.1),
                 nn.LayerNorm(512))
-        # self.pool = nn.AdaptiveAvgPool2d((7, 7))
-        self.embed_pixel = nn.Sequential(
-                # nn.AdaptiveAvgPool2d((7, 7)),
-                Flatten(),
-                nn.Linear(133, self.decoder.d_model),
-                # nn.Sigmoid(),
-                nn.ReLU(),
-                nn.Dropout(p=0.1),
-                nn.LayerNorm(self.decoder.d_model))
-        # self.embed_pixel = ModePool2D()
 
         self.register_state('enc_output', None)
         self.register_state('mask_enc', None)
@@ -49,38 +32,49 @@ class Difnet(CaptioningModel1):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, images, seq, pixel, *args):
-        images = self.embed_image(images)
-        pixel = self.embed_pixel(pixel)
-        enc_output, mask_enc = self.encoder(images, pixel)
-        dec_output = self.decoder(seq, enc_output, mask_enc)
+    def forward(self, images):
+        if self.detector is None:
+            gri_feat, gri_mask = images['grid'], images['mask']
+            gri_feat = self.embed_image(gri_feat)
+        else:
+            outputs = self.detector(images)
+            gri_feat, gri_mask = outputs['gri_feat'], outputs['gri_mask']
+            gri_feat = self.embed_image(gri_feat)
+        mask_enc = gri_mask
+        enc_output = self.encoder(gri_feat, mask_enc)
+        dec_output = self.decoder(enc_output, mask_enc)
         return dec_output
 
     def init_state(self, b_s, device):
         return [torch.zeros((b_s, 0), dtype=torch.long, device=device),
                 None, None]
 
-    def step(self, t, prev_output, visual, pixel, seq, mode='teacher_forcing', **kwargs):
+    def step(self, t, prev_output, visual, seq, mode='teacher_forcing', **kwargs):
         it = None
         if mode == 'teacher_forcing':
             raise NotImplementedError
         elif mode == 'feedback':
             if t == 0:
-                visual = self.embed_image(visual)
-                pixel = self.embed_pixel(pixel)
-                self.enc_output, self.mask_enc = self.encoder(visual, pixel)
-                if isinstance(visual, torch.Tensor):
-                    it = visual.data.new_full((visual.shape[0], 1), self.bos_idx).long()
+                if self.detector is None:
+                    gri_feat, gri_mask = visual['grid'], visual['mask']
+                    gri_feat = self.embed_image(gri_feat)
                 else:
-                    it = visual[0].data.new_full((visual[0].shape[0], 1), self.bos_idx).long()
+                    outputs = self.detector(visual)
+                    gri_feat, gri_mask = outputs['gri_feat'], outputs['gri_mask']
+                self.mask_enc = gri_mask
+                self.enc_output = self.encoder(gri_feat, gri_mask)
+                if isinstance(gri_feat, torch.Tensor):
+                    it = gri_feat.data.new_full((gri_feat.shape[0], 1), self.bos_idx).long()
+                else:
+                    it = gri_feat[0].data.new_full((gri_feat[0].shape[0], 1), self.bos_idx).long()
             else:
                 it = prev_output
 
         return self.decoder(it, self.enc_output, self.mask_enc)
 
 
-class TransformerEnsemble(CaptioningModel1):
-    def __init__(self, model: Difnet, weight_files):
+class TransformerEnsemble(CaptioningModel):
+    def __init__(self, model: Transformer, weight_files):
         super(TransformerEnsemble, self).__init__()
         self.n = len(weight_files)
         self.models = ModuleList([copy.deepcopy(model) for _ in range(self.n)])
@@ -95,5 +89,3 @@ class TransformerEnsemble(CaptioningModel1):
             out_ensemble.append(out_i.unsqueeze(0))
 
         return torch.mean(torch.cat(out_ensemble, 0), dim=0)
-
-

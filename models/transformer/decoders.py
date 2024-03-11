@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from models.transformer.attention import MultiHeadAttention, sinusoid_encoding_table, PositionWiseFeedForward
+from models.attention import MultiHeadAttention, sinusoid_encoding_table, PositionWiseFeedForward
 from models.containers import Module, ModuleList
 
 

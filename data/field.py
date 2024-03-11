@@ -66,17 +66,35 @@ class TextField:
             self.punctuations.append("..")
 
     def preprocess(self, x):
-        if six.PY2 and isinstance(x, six.string_types) and not isinstance(x, six.text_type):
-            x = six.text_type(x, encoding='utf-8')
-        if self.lower:
-            x = six.text_type.lower(x)
-        x = self.tokenize(x.rstrip('\n'))
-        if self.remove_punctuation:
-            x = [w for w in x if w not in self.punctuations]
-        if self.preprocessing is not None:
-            return self.preprocessing(x)
+        if isinstance(x, str):
+            if six.PY2 and isinstance(x, six.string_types) and not isinstance(x, six.text_type):
+                x = six.text_type(x, encoding='utf-8')
+            if self.lower:
+                x = six.text_type.lower(x)
+            x = self.tokenize(x.rstrip('\n'))
+            if self.remove_punctuation:
+                x = [w for w in x if w not in self.punctuations]
+            if self.preprocessing is not None:
+                return self.preprocessing(x)
+            else:
+                return x
+        elif isinstance(x, list):
+            xn = []
+            for xx in x:
+                if six.PY2 and isinstance(xx, six.string_types) and not isinstance(xx, six.text_type):
+                    xx = six.text_type(xx, encoding='utf-8')
+                if self.lower:
+                    xx = six.text_type.lower(xx)
+                xx = self.tokenize(xx.rstrip('\n'))
+                if self.remove_punctuation:
+                    xx = [w for w in xx if w not in self.punctuations]
+                if self.preprocessing is not None:
+                    xn.append(self.preprocessing(xx))
+                else:
+                    xn.append(xx)
+            return xn
         else:
-            return x
+            raise ValueError("input data must be one of (str, list)")
 
     def process(self, batch, device=None):
         padded = self.pad(batch)
