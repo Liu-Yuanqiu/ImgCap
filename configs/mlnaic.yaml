@@ -1,7 +1,7 @@
-exp_name: '0308'
+exp_name: '0311'
 mode: 'mlnaic'
 resume_last: false
-resume_best: false
+resume_best: true
 logs_folder: './ckpts/logs/'
 
 optimizer:

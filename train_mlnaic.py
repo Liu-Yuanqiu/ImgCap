@@ -20,11 +20,37 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 test = False
 random.seed(1234)
 torch.manual_seed(1234)
 np.random.seed(1234)
+
+def beam_search(logit, seq_len, beam_size):
+    bs = logit.shape[0]
+    now_prob, now_cap = torch.topk(logit[:, 0].squeeze(), beam_size, dim=-1)
+    all_prob = now_prob
+    now_prob = now_prob.unsqueeze(-1)
+    now_cap = now_cap.unsqueeze(-1)
+    
+    for i in range(1, seq_len, 1):
+        now_logit = logit[:, i:i+1].squeeze()
+        # [bs, bm]
+        i_prob, i_word = torch.topk(now_logit, beam_size, dim=-1)
+        
+        i_now_cap = now_cap.repeat(1, beam_size, 1)
+        i_now_cap = torch.cat((i_now_cap, i_word.unsqueeze(-1).repeat(1, 1, beam_size).view(bs, beam_size*beam_size, 1)), -1)
+        i_now_prob = now_prob.repeat(1, beam_size, 1)
+        i_now_prob = torch.cat((i_now_prob, i_prob.unsqueeze(-1).repeat(1, 1, beam_size).view(bs, beam_size*beam_size, 1)), -1)
+        i_all_prob = all_prob.repeat(1, beam_size)
+        i_all_prob = i_all_prob * i_prob.unsqueeze(-1).repeat(1, 1, beam_size).view(bs, beam_size*beam_size)
+
+        top_probs, top_ids = torch.topk(i_all_prob, beam_size, dim=-1)
+        # top_probs, top_ids = torch.sort(i_all_prob, beam_size, dim=-1)
+        now_cap = torch.gather(i_now_cap, 1, top_ids.unsqueeze(-1).expand(bs, beam_size, i_now_cap.shape[-1]))
+        now_prob = torch.gather(i_now_prob, 1, top_ids.unsqueeze(-1).expand(bs, beam_size, i_now_prob.shape[-1]))
+        all_prob = torch.gather(i_all_prob, 1, top_ids)
+    return now_prob.contiguous(), now_cap.contiguous()
 
 def evaluate_loss(model, dataloader, loss_fn, text_field):
 
@@ -122,20 +148,20 @@ def train_scst(model, dataloader, optim, cider, text_field):
 
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
-            image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
-            outs, log_probs = model.beam_search(samples, seq_len, text_field.vocab.stoi['<eos>'],
-                                                beam_size, out_size=beam_size)
+            image_id, samples, caps_gt = batch['image_id'], batch['samples'], batch['caps_gt']
+            log_probs = model(samples)
+            probs, caps = beam_search(log_probs, log_probs.shape[1], beam_size)
+            caps_gen = text_field.decode(caps.view(-1, caps.shape[-1]))
             optim.zero_grad()
 
             # Rewards
-            caps_gen = text_field.decode(outs.view(-1, seq_len))
-            caps_gt = captions
+            
             caps_gt = list(itertools.chain(*([c, ] * beam_size for c in caps_gt)))
             caps_gen, caps_gt = tokenizer_pool.map(evaluation.PTBTokenizer.tokenize, [caps_gen, caps_gt])
             reward = cider.compute_score(caps_gt, caps_gen)[1].astype(np.float32)
-            reward = torch.from_numpy(reward).to(device).view(outs.shape[0], beam_size)
+            reward = torch.from_numpy(reward).to(device).view(log_probs.shape[0], beam_size)
             reward_baseline = torch.mean(reward, -1, keepdim=True)
-            loss = -torch.mean(log_probs, -1) * (reward - reward_baseline)
+            loss = -torch.mean(probs, -1) * (reward - reward_baseline)
 
             loss = loss.mean()
             loss.backward()
@@ -184,9 +210,9 @@ if __name__ == '__main__':
         print("s:", s)
         if s == 0:
             lr = base_lr / 2
-        elif s <= 5:
-            lr = base_lr
         elif s <= 10:
+            lr = base_lr
+        elif s <= 20:
             lr = base_lr * 0.2
         else:
             lr = base_lr * 0.2 * 0.2
