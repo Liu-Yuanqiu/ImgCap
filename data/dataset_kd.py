@@ -113,12 +113,12 @@ class PairedDataset:
         for t_oh in t_gt_oh:
             t_gt_oh_new[:t_oh.shape[0]] += t_oh
         t_gt_oh = t_gt_oh_new
-        t_gt_oh[t_gt_oh>0] = self.gt_score
+        t_gt_oh = np.minimum(t_gt_oh, self.gt_score)
         max_len = max(t_kd_oh.shape[0], t_gt_oh.shape[0])
         label = np.zeros((max_len, self.vocab_size))
         label[:t_kd_oh.shape[0]] = t_kd_oh
         label[:t_gt_oh.shape[0]] += t_gt_oh
-        label[label>self.gt_score] = 1
+        label = np.minimum(label, 1)
 
         if self.use_cache:
             with np.load(filepath, allow_pickle=True) as data_grid:
@@ -195,7 +195,11 @@ def build_coco_dataloaders(config=None, device='cpu'):
         'valid': PairedDataset(coco.val_samples, transform['valid'], use_cache, len(text_field.vocab)),
         'test': PairedDataset(coco.test_samples, transform['valid'], use_cache, len(text_field.vocab)),
     }
-    # print(datasets['train'].__getitem__(100))
+    # label = datasets['train'].__getitem__(100)[0]
+    # for i in range(label.shape[0]):
+    #     l = label[i]
+    #     print(l.sum(), end=" ")
+    # print(label.shape)
     collators = {
         'train': PairedCollator(use_cache, device=device),
         'valid': PairedCollator(use_cache, device=device),

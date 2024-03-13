@@ -14,6 +14,7 @@ warnings.filterwarnings("ignore")
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 import os
+import sys
 import numpy as np
 import itertools
 import multiprocessing
@@ -192,7 +193,8 @@ if __name__ == '__main__':
 
     dataloaders, text_field = build_coco_dataloaders(args, device)
     cider_train = Cider()
-
+    if test:
+        sys.exit()
     if args.dataset.use_cache:
         detector = None
     else:

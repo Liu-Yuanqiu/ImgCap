@@ -46,6 +46,7 @@ class TransformerDecoder(Module):
         self.word_emb = nn.Embedding(vocab_size, d_model, padding_idx=padding_idx)
         # self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(max_len + 1, d_model, 0), freeze=True)
         # self.pos_emb = nn.Linear(d_model, d_model)
+        self.fea2t = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
         self.lnorm = nn.LayerNorm(d_model)
 
@@ -61,6 +62,7 @@ class TransformerDecoder(Module):
 
     def forward(self, encoder_output, mask_encoder):
         vocab_weight = self.word_emb.weight
+        encoder_output = self.fea2t(encoder_output)
         vocab_prob = encoder_output @ vocab_weight.t()
         vocab_prob = vocab_prob.masked_fill(mask_encoder.squeeze().unsqueeze(-1), -np.inf)
         input = torch.sigmoid(vocab_prob) @ vocab_weight
