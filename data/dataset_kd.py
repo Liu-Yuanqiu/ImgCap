@@ -23,7 +23,7 @@ class DictionaryCollator:
         tokens_kd = [item[2] for item in batch]
         caps_gt = [item[3] for item in batch]
         tokens_gt = [item[4] for item in batch]
-        image_ids = [item[6] for item in batch]
+        image_ids = [item[5] for item in batch]
 
 
         outputs = {}
@@ -32,7 +32,7 @@ class DictionaryCollator:
             mask = [item[7] for item in batch]
             grid = torch.from_numpy(np.stack(grid, 0)).to(self.device)
             mask = torch.from_numpy(np.stack(mask, 0)).to(self.device)
-            
+
             samples = {}
             samples['grid'] = grid
             samples['mask'] = mask
@@ -75,18 +75,17 @@ class PairedCollator(DictionaryCollator):
         b['label_masks'] = label_masks
 
         # truncate
-        tokens_kd = [c[:self.max_len] for c in b['tokens_kd']]
+        tokens_kd_new = [c[:self.max_len] for c in b['tokens_kd']]
         max_len = max([len(c) for c in b['tokens_kd']])
 
         padded = []
-        for c in tokens_kd:
-            caption = c + [self.eos_idx] + [self.pad_idx] * (max_len - len(c))
+        for c in tokens_kd_new:
+            caption = c + [self.pad_idx] * (max_len - len(c))
             padded.append(caption)
 
         padded = [torch.Tensor(caption).long() for caption in padded]
         padded = pad_sequence(padded, batch_first=True).to(self.device)
         b['tokens_kd'] = padded
-
         return b
        
 class PairedDataset:
@@ -204,7 +203,7 @@ def build_coco_dataloaders(config=None, device='cpu'):
         'valid': PairedDataset(coco.val_samples, transform['valid'], use_cache, len(text_field.vocab)),
         'test': PairedDataset(coco.test_samples, transform['valid'], use_cache, len(text_field.vocab)),
     }
-    # label = datasets['train'].__getitem__(100)[0]
+    # label = datasets['train'].__getitem__(120)[6]
     # for i in range(label.shape[0]):
     #     l = label[i]
     #     print(l.sum(), end=" ")

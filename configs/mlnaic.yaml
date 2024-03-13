@@ -1,12 +1,12 @@
 exp_name: '0313'
 mode: 'mlnaic'
 resume_last: false
-resume_best: true
+resume_best: false
 logs_folder: './ckpts/logs/'
 
 optimizer:
-  batch_size: 48
-  num_workers: 4
+  batch_size: 16
+  num_workers: 0
 
 dataset:
   root_path: '../mscoco'
