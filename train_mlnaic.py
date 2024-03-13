@@ -193,8 +193,8 @@ if __name__ == '__main__':
 
     dataloaders, text_field = build_coco_dataloaders(args, device)
     cider_train = Cider()
-    if test:
-        sys.exit()
+    # if test:
+    #     sys.exit()
     if args.dataset.use_cache:
         detector = None
     else:
@@ -212,9 +212,9 @@ if __name__ == '__main__':
         print("s:", s)
         if s == 0:
             lr = base_lr / 2
-        elif s <= 10:
+        elif s <= 100:
             lr = base_lr
-        elif s <= 20:
+        elif s <= 100:
             lr = base_lr * 0.2
         else:
             lr = base_lr * 0.2 * 0.2
@@ -244,9 +244,9 @@ if __name__ == '__main__':
     args.model_path = os.path.join("./ckpts", args.mode, args.exp_name)
     if args.resume_last or args.resume_best:
         if args.resume_last:
-            fname = os.path.join(args.model_path, '%s_last.pth' % args.exp_name)
+            fname = os.path.join(args.model_path, '%s_last.pth' % args.mode)
         else:
-            fname = os.path.join(args.model_path, '%s_best.pth' % args.exp_name)
+            fname = os.path.join(args.model_path, '%s_best.pth' % args.mode)
 
         if os.path.exists(fname):
             data = torch.load(fname)
@@ -260,7 +260,8 @@ if __name__ == '__main__':
             start_epoch = data['epoch'] + 1
             best_cider = data['best_cider']
             patience = data['patience']
-            use_rl = data['use_rl']
+            # use_rl = data['use_rl']
+            use_rl = True
             print('Resuming from epoch %d, validation loss %f, and best cider %f' % (
                 data['epoch'], data['val_loss'], data['best_cider']))
             print('patience:', data['patience'])
@@ -335,7 +336,7 @@ if __name__ == '__main__':
             os.makedirs(args.model_path)
 
         if switch_to_rl and not best:
-            data = torch.load(os.path.join(args.model_path, '%s_best.pth' % args.exp_name))
+            data = torch.load(os.path.join(args.model_path, '%s_best.pth' % args.mode))
             torch.set_rng_state(data['torch_rng_state'])
             torch.cuda.set_rng_state(data['cuda_rng_state'])
             np.random.set_state(data['numpy_rng_state'])
@@ -358,10 +359,10 @@ if __name__ == '__main__':
             'patience': patience,
             'best_cider': best_cider,
             'use_rl': use_rl,
-        }, os.path.join(args.model_path, '%s_last.pth' % args.exp_name))
+        }, os.path.join(args.model_path, '%s_last.pth' % args.mode))
 
         if best:
-            copyfile(os.path.join(args.model_path, '%s_last.pth' % args.exp_name), os.path.join(args.model_path, '%s_best.pth' % args.exp_name))
+            copyfile(os.path.join(args.model_path, '%s_last.pth' % args.mode), os.path.join(args.model_path, '%s_best.pth' % args.mode))
         if exit_train:
             writer.close()
             break

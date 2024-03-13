@@ -152,36 +152,45 @@ def id_path(root_path, img_id, use_cache):
 
 class COCO_KD:
     def __init__(self, text_field, root_path, use_cache):
-        self.text_field = text_field
-        ids_train = load_txt(os.path.join(root_path, 'txt', 'coco_train_image_id.txt'))
-        ids_val = load_txt(os.path.join(root_path, 'txt', 'coco_val_image_id.txt'))
-        ids_test = load_txt(os.path.join(root_path, 'txt', 'coco_test_image_id.txt'))
         self.train_samples = []
         self.val_samples = []
         self.test_samples = []
 
-        samples = json.load(open(os.path.join(root_path, "annotations", 'captions_transformer.json'), "r"))
+        if os.path.exists(os.path.join(root_path, "cached_coco_train.json")):
+            self.train_samples = json.load(open(os.path.join(root_path, "cached_coco_train.json"), "r"))
+            self.val_samples = json.load(open(os.path.join(root_path, "cached_coco_val.json"), "r"))
+            self.test_samples = json.load(open(os.path.join(root_path, "cached_coco_test.json"), "r"))
+        else:
+            self.text_field = text_field
+            ids_train = load_txt(os.path.join(root_path, 'txt', 'coco_train_image_id.txt'))
+            ids_val = load_txt(os.path.join(root_path, 'txt', 'coco_val_image_id.txt'))
+            ids_test = load_txt(os.path.join(root_path, 'txt', 'coco_test_image_id.txt'))
+            
+            samples = json.load(open(os.path.join(root_path, "annotations", 'captions_transformer.json'), "r"))
 
-        for sam in samples:
-            img_id = sam['image_id']
-            cap_kd = sam['gen']
-            cap_gt = sam['gts']
-            
-            filepath = id_path(root_path, img_id, use_cache)
-            token_kd = [self.text_field.vocab.stoi[w] for w in self.text_field.preprocess(cap_kd)]
-            token_kd = token_kd + [text_field.vocab.stoi['<eos>']]
-            token_gt = [[self.text_field.vocab.stoi[w] for w in t] for t in self.text_field.preprocess(cap_gt)]
-            token_gt = [t+[text_field.vocab.stoi['<eos>']] for t in token_gt]
-            s = {"id":img_id, "image": filepath, "cap_kd":cap_kd, "token_kd": token_kd, "cap_gt":cap_gt, "token_gt": token_gt}
-            
-            if img_id in ids_train:
-                self.train_samples.append(s)
-            elif img_id in ids_val:
-                self.val_samples.append(s)
-            elif img_id in ids_test:
-                self.test_samples.append(s)
-            else:
-                raise ValueError("wrong image id")
+            for sam in samples:
+                img_id = sam['image_id']
+                cap_kd = sam['gen']
+                cap_gt = sam['gts']
+                
+                filepath = id_path(root_path, img_id, use_cache)
+                token_kd = [self.text_field.vocab.stoi[w] for w in self.text_field.preprocess(cap_kd)]
+                token_kd = token_kd + [text_field.vocab.stoi['<eos>']]
+                token_gt = [[self.text_field.vocab.stoi[w] for w in t] for t in self.text_field.preprocess(cap_gt)]
+                token_gt = [t+[text_field.vocab.stoi['<eos>']] for t in token_gt]
+                s = {"id":img_id, "image": filepath, "cap_kd":cap_kd, "token_kd": token_kd, "cap_gt":cap_gt, "token_gt": token_gt}
+                
+                if img_id in ids_train:
+                    self.train_samples.append(s)
+                elif img_id in ids_val:
+                    self.val_samples.append(s)
+                elif img_id in ids_test:
+                    self.test_samples.append(s)
+                else:
+                    raise ValueError("wrong image id")
+            json.dump(self.train_samples, open(os.path.join(root_path, "cached_coco_train.json"), "w"))
+            json.dump(self.val_samples, open(os.path.join(root_path, "cached_coco_val.json"), "w"))
+            json.dump(self.test_samples, open(os.path.join(root_path, "cached_coco_test.json"), "w"))
             
 def build_coco_dataloaders(config=None, device='cpu'):
     transform = get_transform(config.dataset.transform)
