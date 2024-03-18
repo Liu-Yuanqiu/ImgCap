@@ -5,7 +5,7 @@ resume_best: false
 logs_folder: './ckpts/logs/'
 
 optimizer:
-  batch_size: 16
+  batch_size: 32
   num_workers: 0
 
 dataset:

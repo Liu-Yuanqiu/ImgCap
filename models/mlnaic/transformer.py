@@ -15,8 +15,8 @@ class Transformer(nn.Module):
         # image embed
         self.embed_image = nn.Sequential(
                 nn.Linear(1024, 512),
-                # nn.ReLU(),
-                # nn.Dropout(p=0.1),
+                nn.ReLU(),
+                nn.Dropout(p=0.1),
                 nn.LayerNorm(512))
 
         # self.register_state('enc_output', None)

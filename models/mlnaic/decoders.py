@@ -65,10 +65,15 @@ class TransformerDecoder(Module):
         encoder_output = self.fea2t(encoder_output)
         vocab_prob = encoder_output @ vocab_weight.t()
         vocab_prob = vocab_prob.masked_fill(mask_encoder.squeeze().unsqueeze(-1), -np.inf)
-        input = torch.sigmoid(vocab_prob) @ vocab_weight
+        vocab_prob = torch.softmax(vocab_prob, -1)
+        vocab_prob_v, _ = torch.max(vocab_prob, -1)
+        _, vocab_ids = torch.topk(vocab_prob_v, 20, -1)
+        # input = torch.sigmoid(vocab_prob) @ vocab_weight
+        input = self.word_emb(vocab_ids)
 
 
-        out = self.lnorm(encoder_output + self.dropout(input))
+        # out = self.lnorm(encoder_output + self.dropout(input))
+        out = input
         for i, l in enumerate(self.layers):
             out = l(out, encoder_output, mask_encoder)
 

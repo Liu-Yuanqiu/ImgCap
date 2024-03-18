@@ -212,9 +212,9 @@ if __name__ == '__main__':
         print("s:", s)
         if s == 0:
             lr = base_lr / 2
-        elif s <= 100:
+        elif s <= 10:
             lr = base_lr
-        elif s <= 100:
+        elif s <= 20:
             lr = base_lr * 0.2
         else:
             lr = base_lr * 0.2 * 0.2

@@ -95,6 +95,7 @@ class PairedDataset:
         self.use_cache = use_cache
         self.onehot = np.identity(vocab_size, dtype=np.int32)
         self.vocab_size = vocab_size
+        self.kd_score = 1
         self.gt_score = 0.5
 
     def __getitem__(self, index):
@@ -105,19 +106,39 @@ class PairedDataset:
         cap_gt = self.examples[index]['cap_gt']
         token_gt = self.examples[index]['token_gt']
 
-        t_kd_oh = self.onehot[token_kd]
-        t_gt_oh = [self.onehot[t] for t in token_gt]
-        m_l = max([i.shape[0] for i in t_gt_oh])
-        t_gt_oh_new = np.zeros((m_l, self.vocab_size), dtype=np.int32)
-        for t_oh in t_gt_oh:
-            t_gt_oh_new[:t_oh.shape[0]] += t_oh
-        t_gt_oh = t_gt_oh_new
-        t_gt_oh = np.minimum(t_gt_oh, self.gt_score)
-        max_len = max(t_kd_oh.shape[0], t_gt_oh.shape[0])
-        label = np.zeros((max_len, self.vocab_size))
-        label[:t_kd_oh.shape[0]] = t_kd_oh
-        label[:t_gt_oh.shape[0]] += t_gt_oh
-        label = np.minimum(label, 1)
+        # t_kd_oh = self.onehot[token_kd]
+        # t_gt_oh = [self.onehot[t] for t in token_gt]
+        # m_l = max([i.shape[0] for i in t_gt_oh])
+        # t_gt_oh_new = np.zeros((m_l, self.vocab_size), dtype=np.int32)
+        # for t_oh in t_gt_oh:
+        #     t_gt_oh_new[:t_oh.shape[0]] += t_oh
+        # t_gt_oh = t_gt_oh_new
+        # t_gt_oh = np.minimum(t_gt_oh, self.gt_score)
+        # max_len = max(t_kd_oh.shape[0], t_gt_oh.shape[0])
+        # label = np.zeros((max_len, self.vocab_size))
+        # label[:t_kd_oh.shape[0]] = t_kd_oh
+        # label[:t_gt_oh.shape[0]] += t_gt_oh
+        # label = np.minimum(label, 1)
+
+        # max_len = max( max([len(x) for x in token_gt]), len(token_kd) )
+        max_len = 20
+        label = np.zeros((max_len, self.vocab_size), dtype=np.float32)
+        for i in range(max_len):
+            if i >= len(token_kd):
+                pass
+            else:
+                wid = token_kd[i]
+                if wid not in [0, 1, 2, 3]:
+                    label[i][wid] = self.kd_score
+            for j in range(len(token_gt)):
+                if i >= len(token_gt[j]):
+                    pass
+                else:
+                    wid = token_gt[j][i]
+                    if wid not in [0, 1, 2, 3]:
+                        label[i][wid] = self.gt_score
+                    else:
+                        pass
 
         if self.use_cache:
             with np.load(filepath, allow_pickle=True) as data_grid:
