@@ -1,5 +1,4 @@
 import torch
-import numpy as np
 from torch import nn
 from torch.nn import functional as F
 
@@ -25,15 +24,18 @@ class DecoderLayer(Module):
         self.lnorm2 = nn.LayerNorm(d_model)
         self.pwff = PositionWiseFeedForward(d_model, d_ff, dropout)
 
-    def forward(self, input, enc_output, mask_enc_att, mask=None):
+    def forward(self, input, enc_output, mask_pad, mask_self_att, mask_enc_att):
         # MHA+AddNorm
-        self_att = self.self_att(input, input, input, mask)
+        self_att = self.self_att(input, input, input, mask_self_att)
         self_att = self.lnorm1(input + self.dropout1(self_att))
+        self_att = self_att * mask_pad
         # MHA+AddNorm
         enc_att = self.enc_att(self_att, enc_output, enc_output, mask_enc_att)
         enc_att = self.lnorm2(self_att + self.dropout2(enc_att))
+        enc_att = enc_att * mask_pad
         # FFN+AddNorm
         ff = self.pwff(enc_att)
+        ff = ff * mask_pad
         return ff
 
 
@@ -41,16 +43,10 @@ class TransformerDecoder(Module):
     def __init__(self, vocab_size, max_len, N_dec, padding_idx, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1,
                  self_att_module=None, enc_att_module=None, self_att_module_kwargs=None, enc_att_module_kwargs=None):
         super(TransformerDecoder, self).__init__()
-
+        print(vocab_size)
         self.d_model = d_model
         self.word_emb = nn.Embedding(vocab_size, d_model, padding_idx=padding_idx)
-        # self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(max_len + 1, d_model, 0), freeze=True)
-        # self.pos_emb = nn.Linear(d_model, d_model)
-        self.fea2t = nn.Linear(d_model, d_model)
-        self.dropout = nn.Dropout(dropout)
-        self.lnorm = nn.LayerNorm(d_model)
-        self.w = self.get_clip_mat(20, 60).cuda().unsqueeze(0)
-
+        self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(max_len + 1, d_model, 0), freeze=True)
         self.layers = ModuleList(
             [DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, self_att_module=self_att_module, enc_att_module=enc_att_module, self_att_module_kwargs=self_att_module_kwargs, enc_att_module_kwargs=enc_att_module_kwargs) for _ in range(N_dec)])
         self.fc = nn.Linear(d_model, vocab_size, bias=False)
@@ -61,46 +57,29 @@ class TransformerDecoder(Module):
         self.register_state('running_mask_self_attention', torch.zeros((1, 1, 0)).byte())
         self.register_state('running_seq', torch.zeros((1,)).long())
 
-    def get_clip_mat(self, length, size):
-        w = torch.zeros((length, size), dtype=torch.float32)
-        t = 0.5
-        for j in range(length):
-            for i in range(size):
-                w[j][i] = np.exp(-(j-i*length/size)**2/t)
-        w = w / torch.full(w.shape, size, dtype=torch.float32)
-        return w
-    
-    def forward(self, encoder_output, mask_encoder):
-        vocab_weight = self.word_emb.weight
+    def forward(self, input, encoder_output, mask_encoder=None):
+        # input (b_s, seq_len)
+        b_s, seq_len = input.shape[:2]
+        mask_queries = (input != self.padding_idx).unsqueeze(-1).float()  # (b_s, seq_len, 1)
+        mask_self_attention = torch.triu(torch.ones((seq_len, seq_len), dtype=torch.uint8, device=input.device),
+                                         diagonal=1)
+        mask_self_attention = mask_self_attention.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len, seq_len)
+        mask_self_attention = mask_self_attention + (input == self.padding_idx).unsqueeze(1).unsqueeze(1).byte()
+        mask_self_attention = mask_self_attention.gt(0)  # (b_s, 1, seq_len, seq_len)
+        if self._is_stateful:
+            self.running_mask_self_attention = torch.cat([self.running_mask_self_attention.type_as(mask_self_attention), mask_self_attention], -1)
+            mask_self_attention = self.running_mask_self_attention
 
-        # encoder_output_t = self.fea2t(encoder_output)
-        # vocab_prob = encoder_output_t @ vocab_weight.t()
-        # vocab_prob = vocab_prob.masked_fill(mask_encoder.squeeze().unsqueeze(-1), -np.inf)
-        # vocab_prob = torch.softmax(vocab_prob, -1)
-        # vocab_prob_v, _ = torch.max(vocab_prob, -1)
-        # _, vocab_ids = torch.topk(vocab_prob_v, 20, -1)
-        # input = self.word_emb(vocab_ids)
+        seq = torch.arange(1, seq_len + 1).view(1, -1).expand(b_s, -1).to(input.device)  # (b_s, seq_len)
+        seq = seq.masked_fill(mask_queries.squeeze(-1) == 0, 0)
+        if self._is_stateful:
+            self.running_seq.add_(1)
+            seq = self.running_seq
 
-        region_v = self.fea2t(encoder_output)
-        region_t = torch.softmax(region_v @ vocab_weight.t(), -1) @ vocab_weight
-        region_text = self.lnorm(region_v + region_t)
-        x = torch.matmul(self.w, region_text)
-
-
-        # out = self.lnorm(encoder_output + self.dropout(input))
-        out = x
+        out = self.word_emb(input) + self.pos_emb(seq)
+        
         for i, l in enumerate(self.layers):
-            logit_now, _ = torch.max(F.log_softmax(self.fc(out), dim=-1), dim=-1)
-            mask = None
-            if i == 0:
-                logit_avg = torch.mean(logit_now, dim=-1, keepdim=True)
-                mask = (logit_now < logit_avg).unsqueeze(1).unsqueeze(1)
-            elif i == 1:
-                logit_avg = torch.mean(logit_now, dim=-1, keepdim=True)
-                logit_var = torch.var(logit_now, dim=-1, keepdim=True)
-                mask = (logit_now < (logit_avg-logit_var)).unsqueeze(1).unsqueeze(1)
-            out = l(out, encoder_output, mask_encoder, mask)
-            
+            out = l(out, encoder_output, mask_queries, mask_self_attention, mask_encoder)
 
         out = self.fc(out)
         return F.log_softmax(out, dim=-1)

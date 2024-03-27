@@ -1,5 +1,5 @@
-exp_name: '0313'
-mode: 'mlnaic'
+exp_name: '0326'
+mode: 'unpair'
 resume_last: false
 resume_best: false
 logs_folder: './ckpts/logs/'
@@ -10,7 +10,7 @@ optimizer:
 
 dataset:
   root_path: '../mscoco'
-  use_cache: true
+  use_cache: false
   vocab_path: '../mscoco/txt/coco_vocabulary.txt'
   transform:
     size: [384, 640] # (h, w)

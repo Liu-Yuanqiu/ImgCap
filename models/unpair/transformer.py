@@ -5,7 +5,7 @@ from models.containers import ModuleList
 from ..captioning_model import CaptioningModel
 
 
-class Transformer(nn.Module):
+class Transformer(CaptioningModel):
     def __init__(self, bos_idx, detector, encoder, decoder):
         super(Transformer, self).__init__()
         self.bos_idx = bos_idx
@@ -19,9 +19,9 @@ class Transformer(nn.Module):
                 nn.Dropout(p=0.1),
                 nn.LayerNorm(512))
 
-        # self.register_state('enc_output', None)
-        # self.register_state('mask_enc', None)
-        # self.init_weights()
+        self.register_state('enc_output', None)
+        self.register_state('mask_enc', None)
+        self.init_weights()
 
     @property
     def d_model(self):
@@ -32,17 +32,8 @@ class Transformer(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, images):
-        if self.detector is None:
-            gri_feat, gri_mask = images['grid'], images['mask']
-            gri_feat = self.embed_image(gri_feat)
-        else:
-            outputs = self.detector(images)
-            gri_feat, gri_mask = outputs['gri_feat'], outputs['gri_mask']
-            gri_feat = self.embed_image(gri_feat)
-        mask_enc = gri_mask
-        enc_output = self.encoder(gri_feat, mask_enc)
-        dec_output = self.decoder(enc_output, mask_enc)
+    def forward(self, feat, seq):
+        dec_output = self.decoder(seq, feat)
         return dec_output
 
     def init_state(self, b_s, device):

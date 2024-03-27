@@ -11,6 +11,13 @@ from .transforms import get_transform
 from .field import TextField
 from pycocotools.coco import COCO as pyCOCO
 
+try:
+    from torchvision.transforms import InterpolationMode
+    BICUBIC = InterpolationMode.BICUBIC
+except ImportError:
+    BICUBIC = Image.BICUBIC
+from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
+
 class DictionaryCollator:
     def __init__(self, use_cache, device='cpu'):
         self.device = device
@@ -24,8 +31,8 @@ class DictionaryCollator:
         if self.use_cache:
             grid = [item[2] for item in batch]
             mask = [item[3] for item in batch]
-            grid = torch.from_numpy(np.stack(grid, 0)).to(self.device)
-            mask = torch.from_numpy(np.stack(mask, 0)).to(self.device)
+            grid = torch.from_numpy(np.stack(grid, 0))
+            mask = torch.from_numpy(np.stack(mask, 0))
             
             samples = {}
             samples['grid'] = grid
@@ -33,7 +40,7 @@ class DictionaryCollator:
             outputs['samples'] = samples
         else:
             imgs = [item[2] for item in batch]
-            outputs['samples'] = nested_tensor_from_tensor_list(imgs).to(self.device)
+            outputs['samples'] = torch.from_numpy(np.stack(imgs, 0))
 
         outputs['captions'] = captions
         outputs['image_id'] = image_ids
@@ -62,7 +69,7 @@ class PairedCollator(DictionaryCollator):
             padded.append(caption)
 
         padded = [torch.Tensor(caption).long() for caption in padded]
-        padded = pad_sequence(padded, batch_first=True).to(self.device)
+        padded = pad_sequence(padded, batch_first=True)
 
         b['captions'] = padded
         return b
@@ -141,14 +148,14 @@ class COCO:
         dataset_train2014 = pyCOCO(os.path.join(root_path, 'annotations', 'captions_train2014.json'))
         dataset_val2014 = pyCOCO(os.path.join(root_path, 'annotations', 'captions_val2014.json'))
         for id_train in ids_train:
-            if id_train in dataset_train2014.imgs.keys():
+            if id_train in dataset_train2014.imgToAnns.keys():
                 anns = dataset_train2014.imgToAnns[id_train]
                 anns = [an["caption"] for an in anns]
                 if use_cache:
                     filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id_train)+".npz")
                 else:
-                    filename = dataset_train2014.loadImgs(id_train)[0]['file_name']
-                    filepath = os.path.join(root_path, "images", "train2014", filename)
+                    filename = "COCO_train2014_"+"0"*(12-len(str(id_train)))+str(id_train)+".jpg"
+                    filepath = os.path.join(root_path, "feature", "coco2014", "train2014", filename)
                 self.train_dict_samples.append({"id":id_train, "image": filepath, "text":anns})
                 for ann in anns:
                     token = [self.text_field.vocab.stoi[w] for w in self.text_field.preprocess(ann)]
@@ -159,8 +166,8 @@ class COCO:
                 if use_cache:
                     filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id_train)+".npz")
                 else:
-                    filename = dataset_train2014.loadImgs(id_train)[0]['file_name']
-                    filepath = os.path.join(root_path, "images", "train2014", filename)
+                    filename = "COCO_val2014_"+"0"*(12-len(str(id_train)))+str(id_train)+".jpg"
+                    filepath = os.path.join(root_path, "feature", "coco2014", "val2014", filename)
                 self.train_dict_samples.append({"id":id_train, "image": filepath, "text":anns})
                 for ann in anns:
                     token = [self.text_field.vocab.stoi[w] for w in self.text_field.preprocess(ann)]
@@ -172,8 +179,8 @@ class COCO:
             if use_cache:
                 filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id_val)+".npz")
             else:
-                filename = dataset_train2014.loadImgs(id_val)[0]['file_name']
-                filepath = os.path.join(root_path, "images", "train2014", filename)
+                filename = "COCO_val2014_"+"0"*(12-len(str(id_val)))+str(id_val)+".jpg"
+                filepath = os.path.join(root_path, "feature", "coco2014", "val2014", filename)
             self.val_dict_samples.append({"id":id_val, "image": filepath, "text":anns})
             for ann in anns:
                 token = [self.text_field.vocab.stoi[w] for w in self.text_field.preprocess(ann)]
@@ -185,12 +192,26 @@ class COCO:
             if use_cache:
                 filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id_test)+".npz")
             else:
-                filename = dataset_train2014.loadImgs(id_test)[0]['file_name']
-                filepath = os.path.join(root_path, "images", "train2014", filename)
+                filename = "COCO_val2014_"+"0"*(12-len(str(id_test)))+str(id_test)+".jpg"
+                filepath = os.path.join(root_path, "feature", "coco2014", "val2014", filename)
             self.test_dict_samples.append({"id":id_test, "image": filepath, "text":anns})
 
+
 def build_coco_dataloaders(config=None, device='cpu'):
-    transform = get_transform(config.dataset.transform)
+    # transform = get_transform(config.dataset.transform)
+    transform = {}
+    transform["train"] = Compose([
+                Resize(224, interpolation=BICUBIC),
+                CenterCrop(224),
+                ToTensor(),
+                Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+            ])
+    transform["valid"] = Compose([
+                Resize(224, interpolation=BICUBIC),
+                CenterCrop(224),
+                ToTensor(),
+                Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+            ])
 
     use_cache = config.dataset.use_cache
     text_field = TextField(vocab_path=config.dataset.vocab_path)

@@ -30,8 +30,8 @@ class DictionaryCollator:
         if self.use_cache:
             grid = [item[6] for item in batch]
             mask = [item[7] for item in batch]
-            grid = torch.from_numpy(np.stack(grid, 0)).to(self.device)
-            mask = torch.from_numpy(np.stack(mask, 0)).to(self.device)
+            grid = torch.from_numpy(np.stack(grid, 0)) #.to(self.device)
+            mask = torch.from_numpy(np.stack(mask, 0)) #.to(self.device)
 
             samples = {}
             samples['grid'] = grid
@@ -39,7 +39,7 @@ class DictionaryCollator:
             outputs['samples'] = samples
         else:
             imgs = [item[6] for item in batch]
-            outputs['samples'] = nested_tensor_from_tensor_list(imgs).to(self.device)
+            outputs['samples'] = nested_tensor_from_tensor_list(imgs) #.to(self.device)
 
         outputs['labels'] = labels
         outputs['caps_kd'] = caps_kd
@@ -67,7 +67,7 @@ class PairedCollator(DictionaryCollator):
         batch_size = len(ls)
         max_len = max([c.shape[0] for c in ls])
         vocab_size = ls[0].shape[-1]
-        labels = torch.zeros([batch_size, max_len, vocab_size], dtype=torch.float32, device=self.device)
+        labels = torch.zeros([batch_size, max_len, vocab_size], dtype=torch.float32) #, device=self.device)
         for l, label in zip(ls, labels):
             label[:l.shape[0], :l.shape[1]].copy_(torch.from_numpy(l))
         label_masks = torch.gt(torch.sum(labels, -1), 0)
@@ -84,7 +84,7 @@ class PairedCollator(DictionaryCollator):
             padded.append(caption)
 
         padded = [torch.Tensor(caption).long() for caption in padded]
-        padded = pad_sequence(padded, batch_first=True).to(self.device)
+        padded = pad_sequence(padded, batch_first=True) #.to(self.device)
         b['tokens_kd'] = padded
         return b
        
@@ -242,20 +242,23 @@ def build_coco_dataloaders(config=None, device='cpu'):
         batch_size=batch_size,
         collate_fn=collators['train'],
         num_workers=config.optimizer.num_workers,
-        shuffle=True
+        shuffle=True,
+        pin_memory=True
     )
     dataloaders['valid'] = DataLoader(
         datasets['valid'],
         batch_size=batch_size,
         collate_fn=collators['valid'],
         num_workers=config.optimizer.num_workers,
-        shuffle=False
+        shuffle=False,
+        pin_memory=True
     )
     dataloaders['test'] = DataLoader(
         datasets['test'],
         batch_size=batch_size,
         num_workers=config.optimizer.num_workers,
         collate_fn=collators['test'],
-        shuffle=False
+        shuffle=False,
+        pin_memory=True
     )
     return dataloaders, text_field
