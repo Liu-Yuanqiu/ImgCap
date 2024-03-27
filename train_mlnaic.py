@@ -21,7 +21,9 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 test = False
 random.seed(1234)
 torch.manual_seed(1234)
@@ -112,23 +114,27 @@ def train_xe(model, dataloader, optim, text_field):
     running_loss = .0
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
-            image_id, samples, labels, label_masks = batch['image_id'], batch['samples'], batch['labels'], batch['label_masks']
-
-            out = model(samples)
+            image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
+            samples['grid'] = samples['grid'].to(device)
+            samples['mask'] = samples['mask'].to(device)
+            labels = labels.to(device)
+            tokens_kd = tokens_kd.to(device)
+            en_out, out = model(samples)
+            
             optim.zero_grad()
-            min_len = min(out.shape[1], labels.shape[1])
-            labels = labels[:, :min_len].contiguous()
-            out = out[:, :min_len].contiguous()
-            label_masks = label_masks[:, :min_len].contiguous()
-
-            loss = loss_fn(out, labels, label_masks)
+            seq_len = min(out.shape[1], tokens_kd.shape[1])
+            out = out[:, :seq_len].contiguous()
+            tokens_kd = tokens_kd[:, :seq_len].contiguous()
+            loss0 = loss_fn_0(out.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+            loss1 = loss_fn_1(en_out, labels)
+            loss = loss0 + loss1
             loss.backward()
 
             optim.step()
             this_loss = loss.item()
             running_loss += this_loss
 
-            pbar.set_postfix(loss=running_loss / (it + 1))
+            pbar.set_postfix(loss=running_loss / (it + 1), loss0=loss0.item(), loss1=loss1.item())
             pbar.update()
 
             if test:
@@ -234,8 +240,9 @@ if __name__ == '__main__':
     # Initial conditions
     optim = Adam(model.parameters(), lr=1, betas=(0.9, 0.98))
     scheduler = LambdaLR(optim, lambda_lr)
-
-    loss_fn = MLCrossEntropy()
+    
+    loss_fn_0 = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
+    loss_fn_1 = MLCrossEntropy()
     use_rl = False
     best_cider = .0
     patience = 0

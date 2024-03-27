@@ -62,21 +62,14 @@ class PairedCollator(DictionaryCollator):
     def __call__(self, batch):
         b = super().__call__(batch)
 
-        ls = b['labels']
-        ls = [c[:self.max_len] for c in ls]
-        batch_size = len(ls)
-        max_len = max([c.shape[0] for c in ls])
-        vocab_size = ls[0].shape[-1]
-        labels = torch.zeros([batch_size, max_len, vocab_size], dtype=torch.float32) #, device=self.device)
-        for l, label in zip(ls, labels):
-            label[:l.shape[0], :l.shape[1]].copy_(torch.from_numpy(l))
-        label_masks = torch.gt(torch.sum(labels, -1), 0)
+        labels = [l for l in b['labels']]
+        labels = torch.from_numpy(np.stack(labels, 0))
         b['labels'] = labels
-        b['label_masks'] = label_masks
 
         # truncate
         tokens_kd_new = [c[:self.max_len] for c in b['tokens_kd']]
-        max_len = max([len(c) for c in b['tokens_kd']])
+        # max_len = max([len(c) for c in b['tokens_kd']])
+        max_len = 20
 
         padded = []
         for c in tokens_kd_new:
@@ -96,7 +89,7 @@ class PairedDataset:
         self.onehot = np.identity(vocab_size, dtype=np.int32)
         self.vocab_size = vocab_size
         self.kd_score = 1
-        self.gt_score = 0.5
+        self.gt_score = 1
 
     def __getitem__(self, index):
         id = self.examples[index]['id']
@@ -122,21 +115,21 @@ class PairedDataset:
 
         # max_len = max( max([len(x) for x in token_gt]), len(token_kd) )
         max_len = 20
-        label = np.zeros((max_len, self.vocab_size), dtype=np.float32)
+        label = np.zeros((self.vocab_size), dtype=np.float32)
         for i in range(max_len):
             if i >= len(token_kd):
                 pass
             else:
                 wid = token_kd[i]
                 if wid not in [0, 1, 2, 3]:
-                    label[i][wid] = self.kd_score
+                    label[wid] = self.kd_score
             for j in range(len(token_gt)):
                 if i >= len(token_gt[j]):
                     pass
                 else:
                     wid = token_gt[j][i]
                     if wid not in [0, 1, 2, 3]:
-                        label[i][wid] = self.gt_score
+                        label[wid] = self.gt_score
                     else:
                         pass
 
