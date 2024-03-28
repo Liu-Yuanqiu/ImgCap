@@ -44,7 +44,7 @@ class TransformerDecoder(Module):
 
         self.d_model = d_model
         self.word_emb = nn.Embedding(vocab_size, d_model, padding_idx=padding_idx)
-        self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(max_len + 1, d_model, 0), freeze=True)
+        self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(100, d_model, 1), freeze=True)
         self.fea2t = nn.Linear(d_model, d_model)
 
         self.layers = ModuleList(
@@ -69,13 +69,18 @@ class TransformerDecoder(Module):
     def forward(self, encoder_output, mask_encoder):
         vocab_weight = self.word_emb.weight
 
-        en_fea = self.fea2t(encoder_output)
-        en_fea = torch.mean(encoder_output, 1)
-        # en_att = torch.softmax(torch.matmul(en_fea, vocab_weight.t()), -1)
-        en_att = torch.matmul(en_fea, vocab_weight.t())
-        _, en_ids = torch.topk(en_att, 20, dim=-1)
+        # en_fea = self.fea2t(encoder_output)
+        # en_fea = torch.mean(en_fea, 1)
+        # en_att = torch.matmul(en_fea, vocab_weight.t())
+        # _, en_ids = torch.topk(en_att, 20, dim=-1)
+        
+        en_fea = self.fc(encoder_output)
+        en_att = torch.mean(en_fea, 1)
+        # _, en_ids = torch.topk(en_fea, 20, dim=-1)
+        _, en_ids = torch.max(en_fea, dim=-1)
 
-        out = self.word_emb(en_ids) # + self.pos_emb(en_ids)
+        pos_indx = torch.arange(1, en_ids.shape[-1] + 1, device='cuda').view(1, -1)
+        out = self.word_emb(en_ids) + self.pos_emb(pos_indx)
         for i, l in enumerate(self.layers):
             # logit_now, _ = torch.max(F.log_softmax(self.fc(out), dim=-1), dim=-1)
             mask = None

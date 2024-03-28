@@ -68,8 +68,8 @@ class PairedCollator(DictionaryCollator):
 
         # truncate
         tokens_kd_new = [c[:self.max_len] for c in b['tokens_kd']]
-        # max_len = max([len(c) for c in b['tokens_kd']])
-        max_len = 20
+        max_len = max([len(c) for c in b['tokens_kd']])
+        # max_len = 20
 
         padded = []
         for c in tokens_kd_new:
@@ -113,8 +113,8 @@ class PairedDataset:
         # label[:t_gt_oh.shape[0]] += t_gt_oh
         # label = np.minimum(label, 1)
 
-        # max_len = max( max([len(x) for x in token_gt]), len(token_kd) )
-        max_len = 20
+        max_len = max( max([len(x) for x in token_gt]), len(token_kd) )
+        # max_len = 20
         label = np.zeros((self.vocab_size), dtype=np.float32)
         for i in range(max_len):
             if i >= len(token_kd):

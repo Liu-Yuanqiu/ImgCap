@@ -12,7 +12,8 @@ class MLCrossEntropy(nn.Module):
     def forward(self, logit, target, mask=None):
         logit = logit.view(-1, logit.shape[-1])
         target = target.view(-1, target.shape[-1])
-        loss = self.loss(logit, target)
+        # loss = self.loss(logit, target)
+        loss = - logit * target
         if mask is not None:
             mask = mask.view(-1)
             loss = torch.sum(loss * mask) / torch.sum(mask)

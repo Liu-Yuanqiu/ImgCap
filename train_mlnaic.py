@@ -21,7 +21,7 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 test = False
@@ -55,7 +55,7 @@ def beam_search(logit, seq_len, beam_size):
         all_prob = torch.gather(i_all_prob, 1, top_ids)
     return now_prob.contiguous(), now_cap.contiguous()
 
-def evaluate_loss(model, dataloader, loss_fn, text_field):
+def evaluate_loss(model, dataloader):
 
     # Validation loss
     model.eval()
@@ -63,20 +63,26 @@ def evaluate_loss(model, dataloader, loss_fn, text_field):
     with tqdm(desc='Epoch %d - validation' % e, unit='it', total=len(dataloader)) as pbar:
         with torch.no_grad():
             for it, batch in enumerate(dataloader):
-                image_id, samples, labels, label_masks = batch['image_id'], batch['samples'], batch['labels'], batch['label_masks']
+                image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
+                samples['grid'] = samples['grid'].to(device)
+                samples['mask'] = samples['mask'].to(device)
+                labels = labels.to(device)
+                tokens_kd = tokens_kd.to(device)
+                en_out, out = model(samples)
 
-                out = model(samples)
-                optim.zero_grad()
-                min_len = min(out.shape[1], labels.shape[1])
-                labels = labels[:, :min_len].contiguous()
-                out = out[:, :min_len].contiguous()
-                label_masks = label_masks[:, :min_len].contiguous()
+                # optim.zero_grad()
+                seq_len = min(out.shape[1], tokens_kd.shape[1])
+                out = out[:, :seq_len].contiguous()
+                tokens_kd = tokens_kd[:, :seq_len].contiguous()
+                loss0 = loss_fn_0(out.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+                loss1 = loss_fn_1(en_out, labels)
+                loss = loss0 + loss1
+                # loss.backward()
 
-                loss = loss_fn(out, labels, label_masks)
                 this_loss = loss.item()
                 running_loss += this_loss
 
-                pbar.set_postfix(loss=running_loss / (it + 1))
+                pbar.set_postfix(loss=running_loss / (it + 1), loss0=loss0.item(), loss1=loss1.item())
                 pbar.update()
 
                 if test:
@@ -93,15 +99,20 @@ def evaluate_metrics(model, dataloader, text_field):
     with tqdm(desc='Epoch %d - evaluation' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
             image_id, samples, caps_gt = batch['image_id'], batch['samples'], batch['caps_gt']
+            samples['grid'] = samples['grid'].to(device)
+            samples['mask'] = samples['mask'].to(device)
             with torch.no_grad():
-                out = model(samples)
-            _, ids = torch.max(out, dim=-1)
-            caps_gen = text_field.decode(ids, join_words=False)
+                _, logit = model(samples)
+            _, out = torch.max(logit, -1)
+            caps_gen = text_field.decode(out, join_words=False)
             for i, (gts_i, gen_i) in enumerate(zip(caps_gt, caps_gen)):
                 gen_i = ' '.join([k for k, g in itertools.groupby(gen_i)])
                 gen['%d_%d' % (it, i)] = [gen_i, ]
                 gts['%d_%d' % (it, i)] = gts_i
             pbar.update()
+            # if it == 1:
+            #     print(gen)
+            #     print(gts)
 
     gts = evaluation.PTBTokenizer.tokenize(gts)
     gen = evaluation.PTBTokenizer.tokenize(gen)
@@ -215,15 +226,16 @@ if __name__ == '__main__':
 
     def lambda_lr(s):
         base_lr = 0.0001
-        print("s:", s)
-        if s == 0:
-            lr = base_lr / 2
+        
+        if s <= 2:
+            lr = base_lr * (s+1) / 4
         elif s <= 10:
             lr = base_lr
         elif s <= 20:
             lr = base_lr * 0.2
         else:
             lr = base_lr * 0.2 * 0.2
+        print("Epoch: %d, Learning Rate: %f" % (s, lr))
         return lr
 
     def lambda_lr_rl(s):
@@ -285,7 +297,7 @@ if __name__ == '__main__':
             writer.add_scalar('data/reward_baseline', reward_baseline, e)
         scheduler.step()
         # Validation loss
-        val_loss = evaluate_loss(model, dataloaders['valid'], loss_fn, text_field)
+        val_loss = evaluate_loss(model, dataloaders['valid'])
         writer.add_scalar('data/val_loss', val_loss, e)
 
         # Validation scores

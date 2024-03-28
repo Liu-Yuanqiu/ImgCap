@@ -213,5 +213,8 @@ class TextField:
                 caption.append(word)
             if join_words:
                 caption = ' '.join(caption)
+            for i in range(len(caption)-1, 0, -1):
+                if caption[i] == caption[i-1]:
+                    del caption[i]
             captions.append(caption)
         return captions
