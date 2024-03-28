@@ -21,7 +21,7 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 test = False
@@ -229,7 +229,7 @@ if __name__ == '__main__':
         
         if s <= 2:
             lr = base_lr * (s+1) / 4
-        elif s <= 10:
+        elif s <= 50:
             lr = base_lr
         elif s <= 20:
             lr = base_lr * 0.2
@@ -295,7 +295,7 @@ if __name__ == '__main__':
             writer.add_scalar('data/train_loss', train_loss, e)
             writer.add_scalar('data/reward', reward, e)
             writer.add_scalar('data/reward_baseline', reward_baseline, e)
-        scheduler.step()
+        
         # Validation loss
         val_loss = evaluate_loss(model, dataloaders['valid'])
         writer.add_scalar('data/val_loss', val_loss, e)
@@ -331,7 +331,7 @@ if __name__ == '__main__':
 
         switch_to_rl = False
         exit_train = False
-        if patience == 5:
+        if patience == 10:
             if not use_rl:
                 use_rl = True
                 switch_to_rl = True
@@ -385,3 +385,5 @@ if __name__ == '__main__':
         if exit_train:
             writer.close()
             break
+        
+        scheduler.step()

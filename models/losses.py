@@ -18,5 +18,5 @@ class MLCrossEntropy(nn.Module):
             mask = mask.view(-1)
             loss = torch.sum(loss * mask) / torch.sum(mask)
         else:
-            loss = loss.mean()
+            loss = torch.sum(loss * target) / torch.sum(target)
         return loss

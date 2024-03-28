@@ -5,7 +5,7 @@ from torch.nn import functional as F
 
 from models.attention import MultiHeadAttention, sinusoid_encoding_table, PositionWiseFeedForward
 from models.containers import Module, ModuleList
-
+from models.mlnaic.encoders import EncoderLayer
 
 class DecoderLayer(Module):
     def __init__(self, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, self_att_module=None,
@@ -47,8 +47,8 @@ class TransformerDecoder(Module):
         self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(100, d_model, 1), freeze=True)
         self.fea2t = nn.Linear(d_model, d_model)
 
-        self.layers = ModuleList(
-            [DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, self_att_module=self_att_module, enc_att_module=enc_att_module, self_att_module_kwargs=self_att_module_kwargs, enc_att_module_kwargs=enc_att_module_kwargs) for _ in range(N_dec)])
+        self.layers = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, self_att_module=self_att_module, enc_att_module=enc_att_module, self_att_module_kwargs=self_att_module_kwargs, enc_att_module_kwargs=enc_att_module_kwargs) for _ in range(N_dec)])
+        # self.layers = ModuleList([EncoderLayer(d_model, d_k, d_v, h, d_ff, dropout, identity_map_reordering=False, attention_module=None, attention_module_kwargs=None) for _ in range(N_dec)])
         self.fc = nn.Linear(d_model, vocab_size, bias=False)
         self.max_len = max_len
         self.padding_idx = padding_idx
@@ -82,16 +82,19 @@ class TransformerDecoder(Module):
         pos_indx = torch.arange(1, en_ids.shape[-1] + 1, device='cuda').view(1, -1)
         out = self.word_emb(en_ids) + self.pos_emb(pos_indx)
         for i, l in enumerate(self.layers):
-            # logit_now, _ = torch.max(F.log_softmax(self.fc(out), dim=-1), dim=-1)
+            logit_now, _ = torch.max(F.log_softmax(self.fc(out), dim=-1), dim=-1)
             mask = None
-            # if i == 0:
-            #     logit_avg = torch.mean(logit_now, dim=-1, keepdim=True)
-            #     mask = (logit_now < logit_avg).unsqueeze(1).unsqueeze(1)
-            # elif i == 1:
-            #     logit_avg = torch.mean(logit_now, dim=-1, keepdim=True)
-            #     logit_var = torch.var(logit_now, dim=-1, keepdim=True)
-            #     mask = (logit_now < (logit_avg-logit_var)).unsqueeze(1).unsqueeze(1)
+            if i == 0:
+                logit_avg = torch.mean(logit_now, dim=-1, keepdim=True)
+                mask = (logit_now < logit_avg).unsqueeze(1).unsqueeze(1)
+            elif i == 1:
+                logit_avg = torch.mean(logit_now, dim=-1, keepdim=True)
+                logit_var = torch.var(logit_now, dim=-1, keepdim=True)
+                mask = (logit_now < (logit_avg-logit_var)).unsqueeze(1).unsqueeze(1)
+            
             out = l(out, encoder_output, mask_encoder, mask)
+
+            # out = l(out, out, out, mask)
             
 
         out = self.fc(out)
