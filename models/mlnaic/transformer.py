@@ -42,7 +42,7 @@ class Transformer(nn.Module):
             gri_feat = self.embed_image(gri_feat)
         mask_enc = gri_mask
         enc_output = self.encoder(gri_feat, mask_enc)
-        en_att, logit = self.decoder(enc_output, mask_enc)
+        en_att, logit = self.decoder(gri_feat, gri_mask, enc_output, mask_enc)
         return en_att, logit
 
     def init_state(self, b_s, device):

@@ -21,7 +21,7 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 test = False
@@ -55,6 +55,19 @@ def beam_search(logit, seq_len, beam_size):
         all_prob = torch.gather(i_all_prob, 1, top_ids)
     return now_prob.contiguous(), now_cap.contiguous()
 
+def decode_norepeat(logit, repetition_penalty=0):
+    _, out = torch.max(logit, -1)
+    batch_size = out.shape[0]
+
+    target_mask = torch.nn.functional.one_hot(out, num_classes=len(text_field.vocab))
+    target_mask = target_mask[:, :-1]
+    target_mask = torch.where(target_mask==0, torch.tensor(1, dtype=torch.int32, device=device), torch.tensor(repetition_penalty, dtype=torch.int32, device=device))
+    target_mask_0 = torch.ones((batch_size, 1, len(text_field.vocab)), dtype=torch.int32, device=device)
+    target_mask = torch.cat([target_mask_0, target_mask], dim=1)
+    _, out_norepeat = torch.max(logit*target_mask, -1)
+
+    return out, out_norepeat
+
 def evaluate_loss(model, dataloader):
 
     # Validation loss
@@ -63,18 +76,20 @@ def evaluate_loss(model, dataloader):
     with tqdm(desc='Epoch %d - validation' % e, unit='it', total=len(dataloader)) as pbar:
         with torch.no_grad():
             for it, batch in enumerate(dataloader):
-                image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
+                image_id, samples, labels, labels_out, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['labels_out'], batch['tokens_kd']
                 samples['grid'] = samples['grid'].to(device)
                 samples['mask'] = samples['mask'].to(device)
                 labels = labels.to(device)
+                labels_out = labels_out.to(device)
                 tokens_kd = tokens_kd.to(device)
                 en_out, out = model(samples)
 
                 # optim.zero_grad()
-                seq_len = min(out.shape[1], tokens_kd.shape[1])
-                out = out[:, :seq_len].contiguous()
-                tokens_kd = tokens_kd[:, :seq_len].contiguous()
-                loss0 = loss_fn_0(out.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+                # seq_len = min(out.shape[1], tokens_kd.shape[1])
+                # out = out[:, :seq_len].contiguous()
+                # tokens_kd = tokens_kd[:, :seq_len].contiguous()
+                # loss0 = loss_fn_0(out.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+                loss0 = loss_fn_0(out, labels_out)
                 loss1 = loss_fn_1(en_out, labels)
                 loss = loss0 + loss1
                 # loss.backward()
@@ -104,7 +119,7 @@ def evaluate_metrics(model, dataloader, text_field):
             with torch.no_grad():
                 _, logit = model(samples)
             _, out = torch.max(logit, -1)
-            caps_gen = text_field.decode(out, join_words=False)
+            caps_gen = text_field.decode(out, join_words=False, deduplication=True)
             for i, (gts_i, gen_i) in enumerate(zip(caps_gt, caps_gen)):
                 gen_i = ' '.join([k for k, g in itertools.groupby(gen_i)])
                 gen['%d_%d' % (it, i)] = [gen_i, ]
@@ -125,18 +140,20 @@ def train_xe(model, dataloader, optim, text_field):
     running_loss = .0
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
-            image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
+            image_id, samples, labels, labels_out, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['labels_out'], batch['tokens_kd']
             samples['grid'] = samples['grid'].to(device)
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
+            labels_out = labels_out.to(device)
             tokens_kd = tokens_kd.to(device)
             en_out, out = model(samples)
             
             optim.zero_grad()
-            seq_len = min(out.shape[1], tokens_kd.shape[1])
-            out = out[:, :seq_len].contiguous()
-            tokens_kd = tokens_kd[:, :seq_len].contiguous()
-            loss0 = loss_fn_0(out.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+            # seq_len = min(out.shape[1], tokens_kd.shape[1])
+            # out = out[:, :seq_len].contiguous()
+            # tokens_kd = tokens_kd[:, :seq_len].contiguous()
+            # loss0 = loss_fn_0(out.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+            loss0 = loss_fn_0(out, labels_out)
             loss1 = loss_fn_1(en_out, labels)
             loss = loss0 + loss1
             loss.backward()
@@ -161,27 +178,28 @@ def train_scst(model, dataloader, optim, cider, text_field):
     running_reward_baseline = .0
     model.train()
     running_loss = .0
-    seq_len = 20
     beam_size = 5
 
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
             image_id, samples, caps_gt = batch['image_id'], batch['samples'], batch['caps_gt']
-            log_probs = model(samples)
-            probs, caps = beam_search(log_probs, log_probs.shape[1], beam_size)
-            caps_gen = text_field.decode(caps.view(-1, caps.shape[-1]))
+            samples['grid'] = samples['grid'].to(device)
+            samples['mask'] = samples['mask'].to(device)
+            _, logit = model(samples)
+            batch_size = logit.shape[0]
+            max_len = logit.shape[1]
             optim.zero_grad()
 
-            # Rewards
-            
-            caps_gt = list(itertools.chain(*([c, ] * beam_size for c in caps_gt)))
+            probs, caps = beam_search(logit, max_len, beam_size)
+            caps_gen = text_field.decode(caps.view(-1, caps.shape[-1]))
+
             caps_gen, caps_gt = tokenizer_pool.map(evaluation.PTBTokenizer.tokenize, [caps_gen, caps_gt])
             reward = cider.compute_score(caps_gt, caps_gen)[1].astype(np.float32)
-            reward = torch.from_numpy(reward).to(device).view(log_probs.shape[0], beam_size)
+            reward = torch.from_numpy(reward).to(device).view(batch_size, beam_size)
             reward_baseline = torch.mean(reward, -1, keepdim=True)
             loss = -torch.mean(probs, -1) * (reward - reward_baseline)
-
             loss = loss.mean()
+
             loss.backward()
             optim.step()
 
@@ -226,12 +244,12 @@ if __name__ == '__main__':
 
     def lambda_lr(s):
         base_lr = 0.0001
-        
+        # base_lr = 5e-6
         if s <= 2:
             lr = base_lr * (s+1) / 4
-        elif s <= 50:
-            lr = base_lr
         elif s <= 20:
+            lr = base_lr
+        elif s <= 35:
             lr = base_lr * 0.2
         else:
             lr = base_lr * 0.2 * 0.2
@@ -240,20 +258,21 @@ if __name__ == '__main__':
 
     def lambda_lr_rl(s):
         base_lr = 5e-6
-        print("s:", s)
         if s <= 29:
             lr = base_lr
         elif s <= 31:
             lr = base_lr * 0.2
         else:
             lr = base_lr * 0.2 * 0.2
+        print("Epoch: %d, RL Learning Rate: %f" % (s, lr))
         return lr
 
     # Initial conditions
     optim = Adam(model.parameters(), lr=1, betas=(0.9, 0.98))
     scheduler = LambdaLR(optim, lambda_lr)
     
-    loss_fn_0 = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
+    # loss_fn_0 = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
+    loss_fn_0 = MLCrossEntropy()
     loss_fn_1 = MLCrossEntropy()
     use_rl = False
     best_cider = .0
@@ -322,8 +341,8 @@ if __name__ == '__main__':
 
         # Prepare for next epoch
         best = False
-        if val_cider >= best_cider:
-            best_cider = val_cider
+        if test_cider >= best_cider:
+            best_cider = test_cider
             patience = 0
             best = True
         else:
@@ -342,13 +361,13 @@ if __name__ == '__main__':
                 print('patience reached.')
                 exit_train = True
         #####
-        if not use_rl:
-            if e >= 20:
-                use_rl = True
-                switch_to_rl = True
-                patience = 0
-                optim = Adam(model.parameters(), lr=5e-6)
-                print("Switching to RL")
+        # if not use_rl:
+        #     if e >= 20:
+        #         use_rl = True
+        #         switch_to_rl = True
+        #         patience = 0
+        #         optim = Adam(model.parameters(), lr=5e-6)
+        #         print("Switching to RL")
         #######
 
         if not os.path.isdir(args.model_path):

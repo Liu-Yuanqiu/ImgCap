@@ -66,15 +66,15 @@ class TransformerDecoder(Module):
         w = w / torch.full(w.shape, size, dtype=torch.float32)
         return w
     
-    def forward(self, encoder_output, mask_encoder):
-        vocab_weight = self.word_emb.weight
+    def forward(self, gri_feat, gri_mask, encoder_output, mask_encoder):
+        # vocab_weight = self.word_emb.weight
 
         # en_fea = self.fea2t(encoder_output)
         # en_fea = torch.mean(en_fea, 1)
         # en_att = torch.matmul(en_fea, vocab_weight.t())
         # _, en_ids = torch.topk(en_att, 20, dim=-1)
-        
-        en_fea = self.fc(encoder_output)
+        en_fea = self.fea2t(encoder_output)
+        en_fea = self.fc(en_fea)
         en_att = torch.mean(en_fea, 1)
         # _, en_ids = torch.topk(en_fea, 20, dim=-1)
         _, en_ids = torch.max(en_fea, dim=-1)
