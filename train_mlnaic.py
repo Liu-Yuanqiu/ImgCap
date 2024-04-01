@@ -295,11 +295,11 @@ if __name__ == '__main__':
             model.load_state_dict(data['state_dict'], strict=False)
             optim.load_state_dict(data['optimizer'])
             scheduler.load_state_dict(data['scheduler'])
+            scheduler.step()
             start_epoch = data['epoch'] + 1
             best_cider = data['best_cider']
             patience = data['patience']
-            # use_rl = data['use_rl']
-            use_rl = True
+            use_rl = data['use_rl']
             print('Resuming from epoch %d, validation loss %f, and best cider %f' % (
                 data['epoch'], data['val_loss'], data['best_cider']))
             print('patience:', data['patience'])
