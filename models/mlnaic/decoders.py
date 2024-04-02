@@ -83,14 +83,16 @@ class TransformerDecoder(Module):
         out = self.word_emb(en_ids) + self.pos_emb(pos_indx)
         for i, l in enumerate(self.layers):
             logit_now, _ = torch.max(F.log_softmax(self.fc(out), dim=-1), dim=-1)
+            logit_avg = torch.mean(logit_now, dim=-1, keepdim=True)
+            logit_var = torch.var(logit_now, dim=-1, keepdim=True)
             mask = None
             if i == 0:
-                logit_avg = torch.mean(logit_now, dim=-1, keepdim=True)
                 mask = (logit_now < logit_avg).unsqueeze(1).unsqueeze(1)
             elif i == 1:
-                logit_avg = torch.mean(logit_now, dim=-1, keepdim=True)
-                logit_var = torch.var(logit_now, dim=-1, keepdim=True)
-                mask = (logit_now < (logit_avg-logit_var)).unsqueeze(1).unsqueeze(1)
+                mask = (logit_now < (logit_avg - logit_var)).unsqueeze(1).unsqueeze(1)
+            else:
+                pass
+                # mask = (logit_now < (logit_avg - logit_var)).unsqueeze(1).unsqueeze(1)
             
             out = l(out, encoder_output, mask_encoder, mask)
 

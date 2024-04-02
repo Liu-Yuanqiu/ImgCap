@@ -118,8 +118,12 @@ def evaluate_metrics(model, dataloader, text_field):
             samples['mask'] = samples['mask'].to(device)
             with torch.no_grad():
                 _, logit = model(samples)
-            _, out = torch.max(logit, -1)
-            caps_gen = text_field.decode(out, join_words=False, deduplication=True)
+            if not use_rl:
+                _, out = torch.max(logit, -1)
+            else:
+                _, out = beam_search(logit, 60, 1)
+                out = out.squeeze()
+            caps_gen = text_field.decode(out, join_words=False)
             for i, (gts_i, gen_i) in enumerate(zip(caps_gt, caps_gen)):
                 gen_i = ' '.join([k for k, g in itertools.groupby(gen_i)])
                 gen['%d_%d' % (it, i)] = [gen_i, ]
@@ -192,7 +196,7 @@ def train_scst(model, dataloader, optim, cider, text_field):
 
             probs, caps = beam_search(logit, max_len, beam_size)
             caps_gen = text_field.decode(caps.view(-1, caps.shape[-1]))
-
+            caps_gt = list(itertools.chain(*([c, ] * beam_size for c in caps_gt)))
             caps_gen, caps_gt = tokenizer_pool.map(evaluation.PTBTokenizer.tokenize, [caps_gen, caps_gt])
             reward = cider.compute_score(caps_gt, caps_gen)[1].astype(np.float32)
             reward = torch.from_numpy(reward).to(device).view(batch_size, beam_size)
@@ -247,12 +251,14 @@ if __name__ == '__main__':
         # base_lr = 5e-6
         if s <= 2:
             lr = base_lr * (s+1) / 4
-        elif s <= 20:
+        elif s <= 50:
             lr = base_lr
-        elif s <= 35:
+        elif s <= 100:
             lr = base_lr * 0.2
-        else:
+        elif s <= 150:
             lr = base_lr * 0.2 * 0.2
+        else:
+            lr = base_lr * 0.2 * 0.2 * 0.2
         print("Epoch: %d, Learning Rate: %f" % (s, lr))
         return lr
 
@@ -300,6 +306,7 @@ if __name__ == '__main__':
             best_cider = data['best_cider']
             patience = data['patience']
             use_rl = data['use_rl']
+            use_rl = True
             print('Resuming from epoch %d, validation loss %f, and best cider %f' % (
                 data['epoch'], data['val_loss'], data['best_cider']))
             print('patience:', data['patience'])

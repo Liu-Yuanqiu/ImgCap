@@ -1,6 +1,6 @@
-exp_name: '0401edmask3'
+exp_name: '0402edmaskrl1121'
 mode: 'mlnaic'
-resume_last: true
+resume_last: false
 resume_best: false
 logs_folder: './ckpts/logs/'
 

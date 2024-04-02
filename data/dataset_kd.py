@@ -94,7 +94,7 @@ class PairedDataset:
         self.use_cache = use_cache
         self.onehot = np.identity(vocab_size, dtype=np.int32)
         self.vocab_size = vocab_size
-        self.kd_score = 5
+        self.kd_score = 2
         self.gt_score = 1
 
     def __getitem__(self, index):
@@ -129,7 +129,7 @@ class PairedDataset:
                 else:
                     wid = token_gt[j][i]
                     if wid not in [0, 1, 2, 3]:
-                        label[wid] = self.gt_score
+                        label[wid] = 1
                     else:
                         pass
         for i in range(max_len):
@@ -138,7 +138,7 @@ class PairedDataset:
             else:
                 wid = token_kd[i]
                 if wid not in [0, 1, 2, 3]:
-                    label[wid] = self.kd_score
+                    label[wid] = 1
 
         label_out = np.zeros((60, self.vocab_size), dtype=np.float32)
         for i in range(max_len):
