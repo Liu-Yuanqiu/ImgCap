@@ -81,18 +81,22 @@ class TransformerDecoder(Module):
 
         pos_indx = torch.arange(1, en_ids.shape[-1] + 1, device='cuda').view(1, -1)
         out0 = self.pos_emb(pos_indx)
+        out0 = out0.repeat(en_ids.shape[0], 1, 1)
         out1 = self.word_emb(en_ids)
+        out = None
+        mask = None
         for i, l in enumerate(self.layers):
-            logit_now, _ = torch.max(F.log_softmax(self.fc(out), dim=-1), dim=-1)
-            logit_avg = torch.mean(logit_now, dim=-1, keepdim=True)
-            logit_var = torch.var(logit_now, dim=-1, keepdim=True)
-            mask = None
             if i == 0:
                 pass
                 # mask = (logit_now < logit_avg).unsqueeze(1).unsqueeze(1)
             elif i == 1:
+                logit_now, _ = torch.max(F.log_softmax(self.fc(out), dim=-1), dim=-1)
+                logit_avg = torch.mean(logit_now, dim=-1, keepdim=True)
                 mask = (logit_now < (logit_avg)).unsqueeze(1).unsqueeze(1)
             else:
+                logit_now, _ = torch.max(F.log_softmax(self.fc(out), dim=-1), dim=-1)
+                logit_avg = torch.mean(logit_now, dim=-1, keepdim=True)
+                logit_var = torch.var(logit_now, dim=-1, keepdim=True)
                 mask = (logit_now < (logit_avg - logit_var)).unsqueeze(1).unsqueeze(1)
             
             if i == 0:
