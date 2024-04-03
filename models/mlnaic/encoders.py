@@ -17,7 +17,6 @@ class EncoderLayer(nn.Module):
         self.pwff = PositionWiseFeedForward(d_model, d_ff, dropout, identity_map_reordering=identity_map_reordering)
 
     def forward(self, queries, keys, values, attention_mask=None, attention_weights=None):
-
         att = self.mhatt(queries, keys, values, attention_mask, attention_weights)
         att = self.lnorm(queries + self.dropout(att))
         ff = self.pwff(att)

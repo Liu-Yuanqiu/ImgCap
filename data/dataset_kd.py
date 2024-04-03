@@ -94,7 +94,7 @@ class PairedDataset:
         self.use_cache = use_cache
         self.onehot = np.identity(vocab_size, dtype=np.int32)
         self.vocab_size = vocab_size
-        self.kd_score = 3
+        self.kd_score = 2
         self.gt_score = 1
 
     def __getitem__(self, index):
@@ -239,7 +239,7 @@ def build_coco_dataloaders(config=None, device='cpu'):
     coco = COCO_KD(text_field, config.dataset.root_path, use_cache)
 
     datasets = {
-        'train': PairedDataset(coco.train_samples, transform['train'], use_cache, len(text_field.vocab)),
+        'train': PairedDataset(coco.train_samples*5, transform['train'], use_cache, len(text_field.vocab)),
         'valid': PairedDataset(coco.val_samples, transform['valid'], use_cache, len(text_field.vocab)),
         'test': PairedDataset(coco.test_samples, transform['valid'], use_cache, len(text_field.vocab)),
     }
@@ -266,7 +266,7 @@ def build_coco_dataloaders(config=None, device='cpu'):
     )
     dataloaders['valid'] = DataLoader(
         datasets['valid'],
-        batch_size=batch_size,
+        batch_size=batch_size*4,
         collate_fn=collators['valid'],
         num_workers=config.optimizer.num_workers,
         shuffle=False,
@@ -274,7 +274,7 @@ def build_coco_dataloaders(config=None, device='cpu'):
     )
     dataloaders['test'] = DataLoader(
         datasets['test'],
-        batch_size=batch_size,
+        batch_size=batch_size*4,
         num_workers=config.optimizer.num_workers,
         collate_fn=collators['test'],
         shuffle=False,
