@@ -25,9 +25,9 @@ class DecoderLayer(Module):
         self.lnorm2 = nn.LayerNorm(d_model)
         self.pwff = PositionWiseFeedForward(d_model, d_ff, dropout)
 
-    def forward(self, input, enc_output, mask_enc_att, mask=None):
+    def forward(self, input, input1, enc_output, mask_enc_att, mask=None):
         # MHA+AddNorm
-        self_att = self.self_att(input, input, input, mask)
+        self_att = self.self_att(input, input1, input1, mask)
         self_att = self.lnorm1(input + self.dropout1(self_att))
         # MHA+AddNorm
         enc_att = self.enc_att(self_att, enc_output, enc_output, mask_enc_att)
@@ -80,21 +80,33 @@ class TransformerDecoder(Module):
         _, en_ids = torch.max(en_fea, dim=-1)
 
         pos_indx = torch.arange(1, en_ids.shape[-1] + 1, device='cuda').view(1, -1)
-        out = self.word_emb(en_ids) + self.pos_emb(pos_indx)
+        out0 = self.pos_emb(pos_indx)
+        out0 = out0.repeat(en_ids.shape[0], 1, 1)
+        out1 = self.word_emb(en_ids)
+        out = None
+        mask = None
         for i, l in enumerate(self.layers):
-            logit_now, _ = torch.max(F.log_softmax(self.fc(out), dim=-1), dim=-1)
-            logit_avg = torch.mean(logit_now, dim=-1, keepdim=True)
-            logit_var = torch.var(logit_now, dim=-1, keepdim=True)
-            mask = None
             if i == 0:
-                mask = (logit_now < logit_avg).unsqueeze(1).unsqueeze(1)
-            elif i == 1:
-                mask = (logit_now < (logit_avg - logit_var)).unsqueeze(1).unsqueeze(1)
-            else:
                 pass
-                # mask = (logit_now < (logit_avg - logit_var)).unsqueeze(1).unsqueeze(1)
+                # mask = (logit_now < logit_avg).unsqueeze(1).unsqueeze(1)
+            elif i == 1:
+                logit_now, _ = torch.max(F.log_softmax(self.fc(out), dim=-1), dim=-1)
+                logit_avg = torch.mean(logit_now, dim=-1, keepdim=True)
+                mask = (logit_now < (logit_avg)).unsqueeze(1).unsqueeze(1)
+            else:
+                logit_now, _ = torch.max(F.log_softmax(self.fc(out), dim=-1), dim=-1)
+                logit_avg = torch.mean(logit_now, dim=-1, keepdim=True)
+                logit_var = torch.var(logit_now, dim=-1, keepdim=True)
+                mask = (logit_now < (logit_avg - logit_var)).unsqueeze(1).unsqueeze(1)
             
-            out = l(out, encoder_output, mask_encoder, mask)
+            if i == 0:
+                out = l(out0, out1, encoder_output, mask_encoder, mask)
+            elif i == 1:
+                out = out + out0
+                out = l(out, out, encoder_output, mask_encoder, mask)
+            else:
+                out = l(out, out, encoder_output, mask_encoder, mask)
+            # out = l(out, encoder_output, mask_encoder, mask)
 
             # out = l(out, out, out, mask)
             

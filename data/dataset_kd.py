@@ -205,7 +205,7 @@ class COCO_KD:
             ids_val = load_txt(os.path.join(root_path, 'txt', 'coco_val_image_id.txt'))
             ids_test = load_txt(os.path.join(root_path, 'txt', 'coco_test_image_id.txt'))
             
-            samples = json.load(open(os.path.join(root_path, "annotations", 'captions_transformer.json'), "r"))
+            samples = json.load(open(os.path.join(root_path, "annotations", 'captions_kd3.json'), "r"))
 
             for sam in samples:
                 img_id = sam['image_id']

@@ -22,7 +22,7 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 test = False
@@ -233,7 +233,7 @@ def train_scst(model, dataloader, optim, cider, text_field):
 if __name__ == '__main__':
     multiprocessing.set_start_method('spawn')
     device = torch.device('cuda')
-    args = OmegaConf.load('configs/mlnaic.yaml')
+    args = OmegaConf.load('configs/s2s.yaml')
     print(args)
 
     writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.mode, args.exp_name))
@@ -255,29 +255,19 @@ if __name__ == '__main__':
 
     def lambda_lr(s):
         base_lr = 0.0001
-        # base_lr = 5e-6
         if s <= 2:
             lr = base_lr * (s+1) / 4
-        elif s <= 50:
+        elif s <= 10:
             lr = base_lr
-        elif s <= 100:
+        elif s <= 15:
             lr = base_lr * 0.2
-        elif s <= 150:
+        elif s <= 20:
             lr = base_lr * 0.2 * 0.2
+        elif s <= 80:
+            lr = base_lr * 0.05
         else:
-            lr = base_lr * 0.2 * 0.2 * 0.2
+            lr = base_lr * 0.05 * 0.2
         print("Epoch: %d, Learning Rate: %f" % (s, lr))
-        return lr
-
-    def lambda_lr_rl(s):
-        base_lr = 5e-6
-        if s <= 29:
-            lr = base_lr
-        elif s <= 31:
-            lr = base_lr * 0.2
-        else:
-            lr = base_lr * 0.2 * 0.2
-        print("Epoch: %d, RL Learning Rate: %f" % (s, lr))
         return lr
 
     # Initial conditions
