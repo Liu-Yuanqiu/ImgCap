@@ -30,6 +30,7 @@ class Transformer(nn.Module):
                                                 enc_att_module_kwargs=attention_module_kwargs) 
                                                 for _ in range(N_de)])    
         
+        self.img2txt = nn.Linear(d_model, d_model)
         self.word_emb = nn.Embedding(vocab_size, d_model, padding_idx=padding_idx)
         self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(100, d_model, 1), freeze=True)
         self.fc = nn.Linear(d_model, vocab_size, bias=False)
@@ -48,20 +49,22 @@ class Transformer(nn.Module):
         for l in self.encoder_img:
             enc_img = l(enc_img, enc_img, enc_img, enc_mask)
         
-        enc_txt = gri_feat
+        enc_txt = self.img2txt(gri_feat)
+        vocab = self.fc.weight
         for l in self.encoder_txt:
             enc_txt = l(enc_txt, enc_txt, enc_txt, enc_mask)
         
-        enc_fea = self.fc(enc_txt)
-        enc_att = torch.mean(enc_fea, 1)
+            enc_txt = torch.sigmoid(enc_txt @ vocab.t()) @ vocab
+        enc_att = torch.mean(self.fc(enc_txt), 1)
 
-        _, en_ids = torch.max(enc_fea, dim=-1)
-        pos_indx = torch.arange(1, en_ids.shape[-1] + 1, device='cuda').view(1, -1)
-        out = self.word_emb(en_ids) + self.pos_emb(pos_indx)
+        # _, en_ids = torch.max(enc_fea, dim=-1)
+        # pos_indx = torch.arange(1, en_ids.shape[-1] + 1, device='cuda').view(1, -1)
+        # out = self.word_emb(en_ids) + self.pos_emb(pos_indx)
+        out = enc_txt
         for l in self.decoder:
             out = l(out, out, enc_img, enc_mask)
         out = self.fc(out)
-
+        
         return F.log_softmax(enc_att, dim=-1), F.log_softmax(out, dim=-1)
 
     @property

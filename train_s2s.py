@@ -32,9 +32,9 @@ np.random.seed(1234)
 
 def beam_search(logit, seq_len, beam_size):
     bs = logit.shape[0]
-    # now_prob, now_cap = torch.topk(logit[:, 0].squeeze(), beam_size, dim=-1)
-    now_prob, now_cap = torch.max(logit[:, 0].squeeze(), dim=-1)
-    now_prob, now_cap = now_prob.unsqueeze(1).repeat(1, beam_size), now_cap.unsqueeze(1).repeat(1, beam_size)
+    now_prob, now_cap = torch.topk(logit[:, 0].squeeze(), beam_size, dim=-1)
+    # now_prob, now_cap = torch.max(logit[:, 0].squeeze(), dim=-1)
+    # now_prob, now_cap = now_prob.unsqueeze(1).repeat(1, beam_size), now_cap.unsqueeze(1).repeat(1, beam_size)
     all_prob = now_prob
     now_prob = now_prob.unsqueeze(-1)
     now_cap = now_cap.unsqueeze(-1)
@@ -88,10 +88,12 @@ def evaluate_loss(model, dataloader):
                 en_out, out = model(samples)
 
                 # optim.zero_grad()
-                # seq_len = min(out.shape[1], tokens_kd.shape[1])
-                # out = out[:, :seq_len].contiguous()
-                # tokens_kd = tokens_kd[:, :seq_len].contiguous()
-                # loss0 = loss_fn_0(out.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+                # XE
+                seq_len = min(out.shape[1], tokens_kd.shape[1])
+                out_ce = out[:, :seq_len].contiguous()
+                tokens_kd = tokens_kd[:, :seq_len].contiguous()
+                loss_ce = loss_fn(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+                # ML
                 loss0 = loss_fn_0(out, labels_out)
                 loss1 = loss_fn_1(en_out, labels)
                 loss = loss0 + loss1
@@ -100,7 +102,7 @@ def evaluate_loss(model, dataloader):
                 this_loss = loss.item()
                 running_loss += this_loss
 
-                pbar.set_postfix(loss=running_loss / (it + 1), loss0=loss0.item(), loss1=loss1.item())
+                pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss0=loss0.item(), loss1=loss1.item())
                 pbar.update()
 
                 if test:
@@ -153,20 +155,24 @@ def train_xe(model, dataloader, optim, text_field):
             en_out, out = model(samples)
             
             optim.zero_grad()
-            # seq_len = min(out.shape[1], tokens_kd.shape[1])
-            # out = out[:, :seq_len].contiguous()
-            # tokens_kd = tokens_kd[:, :seq_len].contiguous()
-            # loss0 = loss_fn_0(out.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+            # XE
+            seq_len = min(out.shape[1], tokens_kd.shape[1])
+            out_ce = out[:, :seq_len].contiguous()
+            tokens_kd = tokens_kd[:, :seq_len].contiguous()
+            loss_ce = loss_fn(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+            
+            # ML
             loss0 = loss_fn_0(out, labels_out)
             loss1 = loss_fn_1(en_out, labels)
-            loss = loss0 + loss1
+
+            loss = loss_ce + loss0 + loss1
             loss.backward()
 
             optim.step()
             this_loss = loss.item()
             running_loss += this_loss
 
-            pbar.set_postfix(loss=running_loss / (it + 1), loss0=loss0.item(), loss1=loss1.item())
+            pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss0=loss0.item(), loss1=loss1.item())
             pbar.update()
 
             if test:
@@ -257,11 +263,11 @@ if __name__ == '__main__':
         base_lr = 0.0001
         if s <= 2:
             lr = base_lr * (s+1) / 4
-        elif s <= 10:
+        elif s <= 8:
             lr = base_lr
-        elif s <= 15:
+        elif s <= 12:
             lr = base_lr * 0.2
-        elif s <= 20:
+        elif s <= 15:
             lr = base_lr * 0.2 * 0.2
         elif s <= 80:
             lr = base_lr * 0.05
@@ -274,7 +280,7 @@ if __name__ == '__main__':
     optim = Adam(model.parameters(), lr=1, betas=(0.9, 0.98))
     scheduler = LambdaLR(optim, lambda_lr)
     
-    # loss_fn_0 = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
+    loss_fn = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
     loss_fn_0 = MLCrossEntropy()
     loss_fn_1 = MLCrossEntropy()
     use_rl = False
@@ -355,12 +361,12 @@ if __name__ == '__main__':
 
         switch_to_rl = False
         exit_train = False
-        if patience == 10:
+        if patience == 5:
             if not use_rl:
                 use_rl = True
                 switch_to_rl = True
                 patience = 0
-                optim = Adam(model.parameters(), lr=5e-6)
+                # optim = Adam(model.parameters(), lr=5e-6)
                 print("Switching to RL")
             else:
                 print('patience reached.')

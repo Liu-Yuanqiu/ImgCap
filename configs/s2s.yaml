@@ -5,8 +5,8 @@ resume_best: false
 logs_folder: './ckpts/logs/'
 
 optimizer:
-  batch_size: 128
-  num_workers: 16
+  batch_size: 64
+  num_workers: 8
 
 dataset:
   root_path: '../mscoco'

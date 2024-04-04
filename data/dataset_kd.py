@@ -94,7 +94,7 @@ class PairedDataset:
         self.use_cache = use_cache
         self.onehot = np.identity(vocab_size, dtype=np.int32)
         self.vocab_size = vocab_size
-        self.kd_score = 2
+        self.kd_score = 1
         self.gt_score = 1
 
     def __getitem__(self, index):
@@ -261,7 +261,7 @@ def build_coco_dataloaders(config=None, device='cpu'):
         batch_size=batch_size,
         collate_fn=collators['train'],
         num_workers=config.optimizer.num_workers,
-        shuffle=True,
+        shuffle=False,
         pin_memory=True
     )
     dataloaders['valid'] = DataLoader(
