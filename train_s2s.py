@@ -25,7 +25,7 @@ from omegaconf import OmegaConf
 os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-test = True
+test = False
 random.seed(1234)
 torch.manual_seed(1234)
 np.random.seed(1234)
@@ -261,10 +261,12 @@ if __name__ == '__main__':
             lr = base_lr
         elif s <= 15:
             lr = base_lr * 0.2
-        elif s <= 80:
+        elif s <= 20:
             lr = base_lr * 0.2 * 0.2
+        elif s <= 80:
+            lr = base_lr * 0.05
         else:
-            lr = base_lr * 0.2 * 0.2 * 0.2
+            lr = base_lr * 0.05 * 0.2
         print("Epoch: %d, Learning Rate: %f" % (s, lr))
         return lr
 
