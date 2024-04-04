@@ -21,7 +21,9 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 test = False
 random.seed(1234)
 torch.manual_seed(1234)
@@ -53,7 +55,20 @@ def beam_search(logit, seq_len, beam_size):
         all_prob = torch.gather(i_all_prob, 1, top_ids)
     return now_prob.contiguous(), now_cap.contiguous()
 
-def evaluate_loss(model, dataloader, loss_fn, text_field):
+def decode_norepeat(logit, repetition_penalty=0):
+    _, out = torch.max(logit, -1)
+    batch_size = out.shape[0]
+
+    target_mask = torch.nn.functional.one_hot(out, num_classes=len(text_field.vocab))
+    target_mask = target_mask[:, :-1]
+    target_mask = torch.where(target_mask==0, torch.tensor(1, dtype=torch.int32, device=device), torch.tensor(repetition_penalty, dtype=torch.int32, device=device))
+    target_mask_0 = torch.ones((batch_size, 1, len(text_field.vocab)), dtype=torch.int32, device=device)
+    target_mask = torch.cat([target_mask_0, target_mask], dim=1)
+    _, out_norepeat = torch.max(logit*target_mask, -1)
+
+    return out, out_norepeat
+
+def evaluate_loss(model, dataloader):
 
     # Validation loss
     model.eval()
@@ -61,20 +76,28 @@ def evaluate_loss(model, dataloader, loss_fn, text_field):
     with tqdm(desc='Epoch %d - validation' % e, unit='it', total=len(dataloader)) as pbar:
         with torch.no_grad():
             for it, batch in enumerate(dataloader):
-                image_id, samples, labels, label_masks = batch['image_id'], batch['samples'], batch['labels'], batch['label_masks']
+                image_id, samples, labels, labels_out, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['labels_out'], batch['tokens_kd']
+                samples['grid'] = samples['grid'].to(device)
+                samples['mask'] = samples['mask'].to(device)
+                labels = labels.to(device)
+                labels_out = labels_out.to(device)
+                tokens_kd = tokens_kd.to(device)
+                en_out, out = model(samples)
 
-                out = model(samples)
-                optim.zero_grad()
-                min_len = min(out.shape[1], labels.shape[1])
-                labels = labels[:, :min_len].contiguous()
-                out = out[:, :min_len].contiguous()
-                label_masks = label_masks[:, :min_len].contiguous()
+                # optim.zero_grad()
+                # seq_len = min(out.shape[1], tokens_kd.shape[1])
+                # out = out[:, :seq_len].contiguous()
+                # tokens_kd = tokens_kd[:, :seq_len].contiguous()
+                # loss0 = loss_fn_0(out.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+                loss0 = loss_fn_0(out, labels_out)
+                loss1 = loss_fn_1(en_out, labels)
+                loss = loss0 + loss1
+                # loss.backward()
 
-                loss = loss_fn(out, labels, label_masks)
                 this_loss = loss.item()
                 running_loss += this_loss
 
-                pbar.set_postfix(loss=running_loss / (it + 1))
+                pbar.set_postfix(loss=running_loss / (it + 1), loss0=loss0.item(), loss1=loss1.item())
                 pbar.update()
 
                 if test:
@@ -91,15 +114,24 @@ def evaluate_metrics(model, dataloader, text_field):
     with tqdm(desc='Epoch %d - evaluation' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
             image_id, samples, caps_gt = batch['image_id'], batch['samples'], batch['caps_gt']
+            samples['grid'] = samples['grid'].to(device)
+            samples['mask'] = samples['mask'].to(device)
             with torch.no_grad():
-                out = model(samples)
-            _, ids = torch.max(out, dim=-1)
-            caps_gen = text_field.decode(ids, join_words=False)
+                _, logit = model(samples)
+            if not use_rl:
+                _, out = torch.max(logit, -1)
+            else:
+                _, out = beam_search(logit, 60, 1)
+                out = out.squeeze()
+            caps_gen = text_field.decode(out, join_words=False)
             for i, (gts_i, gen_i) in enumerate(zip(caps_gt, caps_gen)):
                 gen_i = ' '.join([k for k, g in itertools.groupby(gen_i)])
                 gen['%d_%d' % (it, i)] = [gen_i, ]
                 gts['%d_%d' % (it, i)] = gts_i
             pbar.update()
+            # if it == 1:
+            #     print(gen)
+            #     print(gts)
 
     gts = evaluation.PTBTokenizer.tokenize(gts)
     gen = evaluation.PTBTokenizer.tokenize(gen)
@@ -112,23 +144,29 @@ def train_xe(model, dataloader, optim, text_field):
     running_loss = .0
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
-            image_id, samples, labels, label_masks = batch['image_id'], batch['samples'], batch['labels'], batch['label_masks']
-
-            out = model(samples)
+            image_id, samples, labels, labels_out, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['labels_out'], batch['tokens_kd']
+            samples['grid'] = samples['grid'].to(device)
+            samples['mask'] = samples['mask'].to(device)
+            labels = labels.to(device)
+            labels_out = labels_out.to(device)
+            tokens_kd = tokens_kd.to(device)
+            en_out, out = model(samples)
+            
             optim.zero_grad()
-            min_len = min(out.shape[1], labels.shape[1])
-            labels = labels[:, :min_len].contiguous()
-            out = out[:, :min_len].contiguous()
-            label_masks = label_masks[:, :min_len].contiguous()
-
-            loss = loss_fn(out, labels, label_masks)
+            # seq_len = min(out.shape[1], tokens_kd.shape[1])
+            # out = out[:, :seq_len].contiguous()
+            # tokens_kd = tokens_kd[:, :seq_len].contiguous()
+            # loss0 = loss_fn_0(out.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+            loss0 = loss_fn_0(out, labels_out)
+            loss1 = loss_fn_1(en_out, labels)
+            loss = loss0 + loss1
             loss.backward()
 
             optim.step()
             this_loss = loss.item()
             running_loss += this_loss
 
-            pbar.set_postfix(loss=running_loss / (it + 1))
+            pbar.set_postfix(loss=running_loss / (it + 1), loss0=loss0.item(), loss1=loss1.item())
             pbar.update()
 
             if test:
@@ -144,27 +182,28 @@ def train_scst(model, dataloader, optim, cider, text_field):
     running_reward_baseline = .0
     model.train()
     running_loss = .0
-    seq_len = 20
     beam_size = 5
 
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
             image_id, samples, caps_gt = batch['image_id'], batch['samples'], batch['caps_gt']
-            log_probs = model(samples)
-            probs, caps = beam_search(log_probs, log_probs.shape[1], beam_size)
-            caps_gen = text_field.decode(caps.view(-1, caps.shape[-1]))
+            samples['grid'] = samples['grid'].to(device)
+            samples['mask'] = samples['mask'].to(device)
+            _, logit = model(samples)
+            batch_size = logit.shape[0]
+            max_len = logit.shape[1]
             optim.zero_grad()
 
-            # Rewards
-            
+            probs, caps = beam_search(logit, max_len, beam_size)
+            caps_gen = text_field.decode(caps.view(-1, caps.shape[-1]))
             caps_gt = list(itertools.chain(*([c, ] * beam_size for c in caps_gt)))
             caps_gen, caps_gt = tokenizer_pool.map(evaluation.PTBTokenizer.tokenize, [caps_gen, caps_gt])
             reward = cider.compute_score(caps_gt, caps_gen)[1].astype(np.float32)
-            reward = torch.from_numpy(reward).to(device).view(log_probs.shape[0], beam_size)
+            reward = torch.from_numpy(reward).to(device).view(batch_size, beam_size)
             reward_baseline = torch.mean(reward, -1, keepdim=True)
             loss = -torch.mean(probs, -1) * (reward - reward_baseline)
-
             loss = loss.mean()
+
             loss.backward()
             optim.step()
 
@@ -209,33 +248,38 @@ if __name__ == '__main__':
 
     def lambda_lr(s):
         base_lr = 0.0001
-        print("s:", s)
-        if s == 0:
-            lr = base_lr / 2
-        elif s <= 10:
+        # base_lr = 5e-6
+        if s <= 2:
+            lr = base_lr * (s+1) / 4
+        elif s <= 50:
             lr = base_lr
-        elif s <= 20:
+        elif s <= 100:
             lr = base_lr * 0.2
-        else:
+        elif s <= 150:
             lr = base_lr * 0.2 * 0.2
+        else:
+            lr = base_lr * 0.2 * 0.2 * 0.2
+        print("Epoch: %d, Learning Rate: %f" % (s, lr))
         return lr
 
     def lambda_lr_rl(s):
         base_lr = 5e-6
-        print("s:", s)
         if s <= 29:
             lr = base_lr
         elif s <= 31:
             lr = base_lr * 0.2
         else:
             lr = base_lr * 0.2 * 0.2
+        print("Epoch: %d, RL Learning Rate: %f" % (s, lr))
         return lr
 
     # Initial conditions
     optim = Adam(model.parameters(), lr=1, betas=(0.9, 0.98))
     scheduler = LambdaLR(optim, lambda_lr)
-
-    loss_fn = MLCrossEntropy()
+    
+    # loss_fn_0 = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
+    loss_fn_0 = MLCrossEntropy()
+    loss_fn_1 = MLCrossEntropy()
     use_rl = False
     best_cider = .0
     patience = 0
@@ -257,11 +301,12 @@ if __name__ == '__main__':
             model.load_state_dict(data['state_dict'], strict=False)
             optim.load_state_dict(data['optimizer'])
             scheduler.load_state_dict(data['scheduler'])
+            scheduler.step()
             start_epoch = data['epoch'] + 1
             best_cider = data['best_cider']
             patience = data['patience']
-            # use_rl = data['use_rl']
-            use_rl = True
+            use_rl = data['use_rl']
+            # use_rl = True
             print('Resuming from epoch %d, validation loss %f, and best cider %f' % (
                 data['epoch'], data['val_loss'], data['best_cider']))
             print('patience:', data['patience'])
@@ -276,9 +321,9 @@ if __name__ == '__main__':
             writer.add_scalar('data/train_loss', train_loss, e)
             writer.add_scalar('data/reward', reward, e)
             writer.add_scalar('data/reward_baseline', reward_baseline, e)
-        scheduler.step()
+        
         # Validation loss
-        val_loss = evaluate_loss(model, dataloaders['valid'], loss_fn, text_field)
+        val_loss = evaluate_loss(model, dataloaders['valid'])
         writer.add_scalar('data/val_loss', val_loss, e)
 
         # Validation scores
@@ -303,8 +348,8 @@ if __name__ == '__main__':
 
         # Prepare for next epoch
         best = False
-        if val_cider >= best_cider:
-            best_cider = val_cider
+        if test_cider >= best_cider:
+            best_cider = test_cider
             patience = 0
             best = True
         else:
@@ -312,7 +357,7 @@ if __name__ == '__main__':
 
         switch_to_rl = False
         exit_train = False
-        if patience == 5:
+        if patience == 10:
             if not use_rl:
                 use_rl = True
                 switch_to_rl = True
@@ -323,13 +368,13 @@ if __name__ == '__main__':
                 print('patience reached.')
                 exit_train = True
         #####
-        if not use_rl:
-            if e >= 20:
-                use_rl = True
-                switch_to_rl = True
-                patience = 0
-                optim = Adam(model.parameters(), lr=5e-6)
-                print("Switching to RL")
+        # if not use_rl:
+        #     if e >= 20:
+        #         use_rl = True
+        #         switch_to_rl = True
+        #         patience = 0
+        #         optim = Adam(model.parameters(), lr=5e-6)
+        #         print("Switching to RL")
         #######
 
         if not os.path.isdir(args.model_path):
@@ -366,3 +411,5 @@ if __name__ == '__main__':
         if exit_train:
             writer.close()
             break
+        
+        scheduler.step()

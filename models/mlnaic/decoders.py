@@ -5,7 +5,7 @@ from torch.nn import functional as F
 
 from models.attention import MultiHeadAttention, sinusoid_encoding_table, PositionWiseFeedForward
 from models.containers import Module, ModuleList
-
+from models.mlnaic.encoders import EncoderLayer
 
 class DecoderLayer(Module):
     def __init__(self, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, self_att_module=None,
@@ -44,15 +44,11 @@ class TransformerDecoder(Module):
 
         self.d_model = d_model
         self.word_emb = nn.Embedding(vocab_size, d_model, padding_idx=padding_idx)
-        # self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(max_len + 1, d_model, 0), freeze=True)
-        # self.pos_emb = nn.Linear(d_model, d_model)
+        self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(100, d_model, 1), freeze=True)
         self.fea2t = nn.Linear(d_model, d_model)
-        self.dropout = nn.Dropout(dropout)
-        self.lnorm = nn.LayerNorm(d_model)
-        self.w = self.get_clip_mat(20, 60).cuda().unsqueeze(0)
 
-        self.layers = ModuleList(
-            [DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, self_att_module=self_att_module, enc_att_module=enc_att_module, self_att_module_kwargs=self_att_module_kwargs, enc_att_module_kwargs=enc_att_module_kwargs) for _ in range(N_dec)])
+        self.layers = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, self_att_module=self_att_module, enc_att_module=enc_att_module, self_att_module_kwargs=self_att_module_kwargs, enc_att_module_kwargs=enc_att_module_kwargs) for _ in range(N_dec)])
+        # self.layers = ModuleList([EncoderLayer(d_model, d_k, d_v, h, d_ff, dropout, identity_map_reordering=False, attention_module=None, attention_module_kwargs=None) for _ in range(N_dec)])
         self.fc = nn.Linear(d_model, vocab_size, bias=False)
         self.max_len = max_len
         self.padding_idx = padding_idx
@@ -70,37 +66,38 @@ class TransformerDecoder(Module):
         w = w / torch.full(w.shape, size, dtype=torch.float32)
         return w
     
-    def forward(self, encoder_output, mask_encoder):
-        vocab_weight = self.word_emb.weight
+    def forward(self, gri_feat, gri_mask, encoder_output, mask_encoder):
+        # vocab_weight = self.word_emb.weight
 
-        # encoder_output_t = self.fea2t(encoder_output)
-        # vocab_prob = encoder_output_t @ vocab_weight.t()
-        # vocab_prob = vocab_prob.masked_fill(mask_encoder.squeeze().unsqueeze(-1), -np.inf)
-        # vocab_prob = torch.softmax(vocab_prob, -1)
-        # vocab_prob_v, _ = torch.max(vocab_prob, -1)
-        # _, vocab_ids = torch.topk(vocab_prob_v, 20, -1)
-        # input = self.word_emb(vocab_ids)
+        # en_fea = self.fea2t(encoder_output)
+        # en_fea = torch.mean(en_fea, 1)
+        # en_att = torch.matmul(en_fea, vocab_weight.t())
+        # _, en_ids = torch.topk(en_att, 20, dim=-1)
+        en_fea = self.fea2t(encoder_output)
+        en_fea = self.fc(en_fea)
+        en_att = torch.mean(en_fea, 1)
+        # _, en_ids = torch.topk(en_fea, 20, dim=-1)
+        _, en_ids = torch.max(en_fea, dim=-1)
 
-        region_v = self.fea2t(encoder_output)
-        region_t = torch.softmax(region_v @ vocab_weight.t(), -1) @ vocab_weight
-        region_text = self.lnorm(region_v + region_t)
-        x = torch.matmul(self.w, region_text)
-
-
-        # out = self.lnorm(encoder_output + self.dropout(input))
-        out = x
+        pos_indx = torch.arange(1, en_ids.shape[-1] + 1, device='cuda').view(1, -1)
+        out = self.word_emb(en_ids) + self.pos_emb(pos_indx)
         for i, l in enumerate(self.layers):
             logit_now, _ = torch.max(F.log_softmax(self.fc(out), dim=-1), dim=-1)
+            logit_avg = torch.mean(logit_now, dim=-1, keepdim=True)
+            logit_var = torch.var(logit_now, dim=-1, keepdim=True)
             mask = None
             if i == 0:
-                logit_avg = torch.mean(logit_now, dim=-1, keepdim=True)
                 mask = (logit_now < logit_avg).unsqueeze(1).unsqueeze(1)
             elif i == 1:
-                logit_avg = torch.mean(logit_now, dim=-1, keepdim=True)
-                logit_var = torch.var(logit_now, dim=-1, keepdim=True)
-                mask = (logit_now < (logit_avg-logit_var)).unsqueeze(1).unsqueeze(1)
+                mask = (logit_now < (logit_avg - logit_var)).unsqueeze(1).unsqueeze(1)
+            else:
+                pass
+                # mask = (logit_now < (logit_avg - logit_var)).unsqueeze(1).unsqueeze(1)
+            
             out = l(out, encoder_output, mask_encoder, mask)
+
+            # out = l(out, out, out, mask)
             
 
         out = self.fc(out)
-        return F.log_softmax(out, dim=-1)
+        return F.log_softmax(en_att, dim=-1), F.log_softmax(out, dim=-1)

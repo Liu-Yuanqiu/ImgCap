@@ -193,7 +193,7 @@ class TextField:
             return var, lengths
         return var
 
-    def decode(self, word_idxs, join_words=True):
+    def decode(self, word_idxs, join_words=True, deduplication=True):
         if isinstance(word_idxs, list) and len(word_idxs) == 0:
             return self.decode([word_idxs, ], join_words)[0]
         if isinstance(word_idxs, list) and isinstance(word_idxs[0], int):
@@ -208,9 +208,16 @@ class TextField:
             caption = []
             for wi in wis:
                 word = self.vocab.itos[int(wi)]
+                if word == self.unk_token:
+                    continue
                 if word == self.eos_token:
                     break
                 caption.append(word)
+            
+            if deduplication:
+                for i in range(len(caption)-1, 0, -1):
+                    if caption[i] == caption[i-1]:
+                        del caption[i]
             if join_words:
                 caption = ' '.join(caption)
             captions.append(caption)

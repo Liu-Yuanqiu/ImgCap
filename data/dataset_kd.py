@@ -19,17 +19,18 @@ class DictionaryCollator:
 
     def __call__(self, batch):
         labels = [item[0] for item in batch]
-        caps_kd = [item[1] for item in batch]
-        tokens_kd = [item[2] for item in batch]
-        caps_gt = [item[3] for item in batch]
-        tokens_gt = [item[4] for item in batch]
-        image_ids = [item[5] for item in batch]
+        labels_out = [item[1] for item in batch]
+        caps_kd = [item[2] for item in batch]
+        tokens_kd = [item[3] for item in batch]
+        caps_gt = [item[4] for item in batch]
+        tokens_gt = [item[5] for item in batch]
+        image_ids = [item[6] for item in batch]
 
 
         outputs = {}
         if self.use_cache:
-            grid = [item[6] for item in batch]
-            mask = [item[7] for item in batch]
+            grid = [item[7] for item in batch]
+            mask = [item[8] for item in batch]
             grid = torch.from_numpy(np.stack(grid, 0)) #.to(self.device)
             mask = torch.from_numpy(np.stack(mask, 0)) #.to(self.device)
 
@@ -38,10 +39,11 @@ class DictionaryCollator:
             samples['mask'] = mask
             outputs['samples'] = samples
         else:
-            imgs = [item[6] for item in batch]
+            imgs = [item[7] for item in batch]
             outputs['samples'] = nested_tensor_from_tensor_list(imgs) #.to(self.device)
 
         outputs['labels'] = labels
+        outputs['labels_out'] = labels_out
         outputs['caps_kd'] = caps_kd
         outputs['tokens_kd'] = tokens_kd
         outputs['caps_gt'] = caps_gt
@@ -62,21 +64,18 @@ class PairedCollator(DictionaryCollator):
     def __call__(self, batch):
         b = super().__call__(batch)
 
-        ls = b['labels']
-        ls = [c[:self.max_len] for c in ls]
-        batch_size = len(ls)
-        max_len = max([c.shape[0] for c in ls])
-        vocab_size = ls[0].shape[-1]
-        labels = torch.zeros([batch_size, max_len, vocab_size], dtype=torch.float32) #, device=self.device)
-        for l, label in zip(ls, labels):
-            label[:l.shape[0], :l.shape[1]].copy_(torch.from_numpy(l))
-        label_masks = torch.gt(torch.sum(labels, -1), 0)
+        labels = [l for l in b['labels']]
+        labels = torch.from_numpy(np.stack(labels, 0))
         b['labels'] = labels
-        b['label_masks'] = label_masks
+
+        labels_out = [l for l in b['labels_out']]
+        labels_out = torch.from_numpy(np.stack(labels_out, 0))
+        b['labels_out'] = labels_out
 
         # truncate
         tokens_kd_new = [c[:self.max_len] for c in b['tokens_kd']]
         max_len = max([len(c) for c in b['tokens_kd']])
+        # max_len = 20
 
         padded = []
         for c in tokens_kd_new:
@@ -95,8 +94,8 @@ class PairedDataset:
         self.use_cache = use_cache
         self.onehot = np.identity(vocab_size, dtype=np.int32)
         self.vocab_size = vocab_size
-        self.kd_score = 1
-        self.gt_score = 0.5
+        self.kd_score = 2
+        self.gt_score = 1
 
     def __getitem__(self, index):
         id = self.examples[index]['id']
@@ -120,25 +119,45 @@ class PairedDataset:
         # label[:t_gt_oh.shape[0]] += t_gt_oh
         # label = np.minimum(label, 1)
 
-        # max_len = max( max([len(x) for x in token_gt]), len(token_kd) )
-        max_len = 20
-        label = np.zeros((max_len, self.vocab_size), dtype=np.float32)
+        max_len = max( max([len(x) for x in token_gt]), len(token_kd) )
+        # max_len = 20
+        label = np.zeros((self.vocab_size), dtype=np.float32)
         for i in range(max_len):
-            if i >= len(token_kd):
-                pass
-            else:
-                wid = token_kd[i]
-                if wid not in [0, 1, 2, 3]:
-                    label[i][wid] = self.kd_score
             for j in range(len(token_gt)):
                 if i >= len(token_gt[j]):
                     pass
                 else:
                     wid = token_gt[j][i]
                     if wid not in [0, 1, 2, 3]:
-                        label[i][wid] = self.gt_score
+                        label[wid] = 1
                     else:
                         pass
+        for i in range(max_len):
+            if i >= len(token_kd):
+                pass
+            else:
+                wid = token_kd[i]
+                if wid not in [0, 1, 2, 3]:
+                    label[wid] = 1
+
+        label_out = np.zeros((60, self.vocab_size), dtype=np.float32)
+        for i in range(max_len):
+            for j in range(len(token_gt)):
+                if i >= len(token_gt[j]):
+                    pass
+                else:
+                    wid = token_gt[j][i]
+                    if wid not in [0, 1, 2]:
+                        label_out[i][wid] = self.gt_score
+                    else:
+                        pass
+        for i in range(max_len):
+            if i >= len(token_kd):
+                pass
+            else:
+                wid = token_kd[i]
+                if wid not in [0, 1, 2]:
+                    label_out[i][wid] = self.kd_score
 
         if self.use_cache:
             with np.load(filepath, allow_pickle=True) as data_grid:
@@ -146,12 +165,12 @@ class PairedDataset:
                 grid = np.array(grid).astype('float32')
                 mask = data_grid['mask']
                 mask = np.array(mask).astype('bool')
-            return label, cap_kd, token_kd, cap_gt, token_gt, id, grid, mask
+            return label, label_out, cap_kd, token_kd, cap_gt, token_gt, id, grid, mask
         else:
             img = Image.open(filepath).convert('RGB')
             if self.transform is not None:
                 img = self.transform(img)
-            return label, cap_kd, token_kd, cap_kd, token_gt, id, img
+            return label, label_out, cap_kd, token_kd, cap_kd, token_gt, id, img
         
     def __len__(self):
         return len(self.examples)
