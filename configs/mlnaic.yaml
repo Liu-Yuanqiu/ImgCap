@@ -1,7 +1,7 @@
 exp_name: 'test'
 mode: 'mlnaic'
-resume_last: false
-resume_best: true
+resume_last: true
+resume_best: false
 logs_folder: './ckpts/logs/'
 
 optimizer:

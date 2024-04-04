@@ -313,7 +313,7 @@ if __name__ == '__main__':
             best_cider = data['best_cider']
             patience = data['patience']
             use_rl = data['use_rl']
-            use_rl = True
+            # use_rl = True
             print('Resuming from epoch %d, validation loss %f, and best cider %f' % (
                 data['epoch'], data['val_loss'], data['best_cider']))
             print('patience:', data['patience'])
