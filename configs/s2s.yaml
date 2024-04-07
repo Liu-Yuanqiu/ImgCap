@@ -1,4 +1,4 @@
-exp_name: 'ed'
+exp_name: 'ed_xe'
 mode: 's2s'
 resume_last: false
 resume_best: false
