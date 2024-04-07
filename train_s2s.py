@@ -79,11 +79,10 @@ def evaluate_loss(model, dataloader):
     with tqdm(desc='Epoch %d - validation' % e, unit='it', total=len(dataloader)) as pbar:
         with torch.no_grad():
             for it, batch in enumerate(dataloader):
-                image_id, samples, labels, labels_out, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['labels_out'], batch['tokens_kd']
+                image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
                 samples['grid'] = samples['grid'].to(device)
                 samples['mask'] = samples['mask'].to(device)
                 labels = labels.to(device)
-                labels_out = labels_out.to(device)
                 tokens_kd = tokens_kd.to(device)
                 en_out, out = model(samples)
 
@@ -94,15 +93,14 @@ def evaluate_loss(model, dataloader):
                 tokens_kd = tokens_kd[:, :seq_len].contiguous()
                 loss_ce = loss_fn(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
                 # ML
-                loss0 = loss_fn_0(out, labels_out)
-                loss1 = loss_fn_1(en_out, labels)
-                loss = loss0 + loss1
+                loss_ml = loss_fn_1(en_out, labels)
+                loss = loss_ce + loss_ml
                 # loss.backward()
 
                 this_loss = loss.item()
                 running_loss += this_loss
 
-                pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss0=loss0.item(), loss1=loss1.item())
+                pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss_ml=loss_ml.item())
                 pbar.update()
 
                 if test:
@@ -123,7 +121,7 @@ def evaluate_metrics(model, dataloader, text_field):
             samples['mask'] = samples['mask'].to(device)
             with torch.no_grad():
                 _, logit = model(samples)
-
+            
             _, out = torch.max(logit, -1)
             caps_gen = text_field.decode(out, join_words=False, deduplication=True)
             for i, (gts_i, gen_i) in enumerate(zip(caps_gt, caps_gen)):
@@ -131,9 +129,6 @@ def evaluate_metrics(model, dataloader, text_field):
                 gen['%d_%d' % (it, i)] = [gen_i, ]
                 gts['%d_%d' % (it, i)] = gts_i
             pbar.update()
-            # if it == 1:
-            #     print(gen)
-            #     print(gts)
 
     gts = evaluation.PTBTokenizer.tokenize(gts)
     gen = evaluation.PTBTokenizer.tokenize(gen)
@@ -146,11 +141,10 @@ def train_xe(model, dataloader, optim, text_field):
     running_loss = .0
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
-            image_id, samples, labels, labels_out, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['labels_out'], batch['tokens_kd']
+            image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
             samples['grid'] = samples['grid'].to(device)
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
-            labels_out = labels_out.to(device)
             tokens_kd = tokens_kd.to(device)
             en_out, out = model(samples)
             
@@ -162,17 +156,16 @@ def train_xe(model, dataloader, optim, text_field):
             loss_ce = loss_fn(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
             
             # ML
-            loss0 = loss_fn_0(out, labels_out)
-            loss1 = loss_fn_1(en_out, labels)
+            loss_ml = loss_fn_1(en_out, labels)
 
-            loss = loss_ce + loss0 + loss1
+            loss = loss_ce + loss_ml
             loss.backward()
 
             optim.step()
             this_loss = loss.item()
             running_loss += this_loss
 
-            pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss0=loss0.item(), loss1=loss1.item())
+            pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss_ml=loss_ml.item())
             pbar.update()
 
             if test:
@@ -263,16 +256,12 @@ if __name__ == '__main__':
         base_lr = 0.0001
         if s <= 2:
             lr = base_lr * (s+1) / 4
-        elif s <= 8:
+        elif s <= 50:
             lr = base_lr
-        elif s <= 12:
-            lr = base_lr * 0.2
-        elif s <= 15:
-            lr = base_lr * 0.2 * 0.2
         elif s <= 80:
-            lr = base_lr * 0.05
+            lr = base_lr * 0.2
         else:
-            lr = base_lr * 0.05 * 0.2
+            lr = base_lr * 0.2 * 0.2
         print("Epoch: %d, Learning Rate: %f" % (s, lr))
         return lr
 
@@ -281,9 +270,7 @@ if __name__ == '__main__':
     scheduler = LambdaLR(optim, lambda_lr)
     
     loss_fn = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
-    loss_fn_0 = MLCrossEntropy()
     loss_fn_1 = MLCrossEntropy()
-    use_rl = False
     best_cider = .0
     patience = 0
     start_epoch = 0
@@ -308,27 +295,18 @@ if __name__ == '__main__':
             start_epoch = data['epoch'] + 1
             best_cider = data['best_cider']
             patience = data['patience']
-            use_rl = data['use_rl']
-            # use_rl = True
             print('Resuming from epoch %d, validation loss %f, and best cider %f' % (
                 data['epoch'], data['val_loss'], data['best_cider']))
             print('patience:', data['patience'])
 
     print("Training starts")
     for e in range(start_epoch, start_epoch + 100):
-        if not use_rl:
-            train_loss = train_xe(model, dataloaders['train'], optim, text_field)
-            writer.add_scalar('data/train_loss', train_loss, e)
-        else:
-            train_loss, reward, reward_baseline = train_scst(model, dataloaders['train'], optim, cider_train, text_field)
-            writer.add_scalar('data/train_loss', train_loss, e)
-            writer.add_scalar('data/reward', reward, e)
-            writer.add_scalar('data/reward_baseline', reward_baseline, e)
+        train_loss = train_xe(model, dataloaders['train'], optim, text_field)
+        writer.add_scalar('data/train_loss', train_loss, e)
         
-        if not use_rl:
-            # Validation loss
-            val_loss = evaluate_loss(model, dataloaders['valid'])
-            writer.add_scalar('data/val_loss', val_loss, e)
+        # Validation loss
+        val_loss = evaluate_loss(model, dataloaders['valid'])
+        writer.add_scalar('data/val_loss', val_loss, e)
 
         # Validation scores
         scores = evaluate_metrics(model, dataloaders['valid'], text_field)
@@ -359,42 +337,13 @@ if __name__ == '__main__':
         else:
             patience += 1
 
-        switch_to_rl = False
         exit_train = False
-        if patience == 5:
-            if not use_rl:
-                use_rl = True
-                switch_to_rl = True
-                patience = 0
-                # optim = Adam(model.parameters(), lr=5e-6)
-                print("Switching to RL")
-            else:
-                print('patience reached.')
-                exit_train = True
-        #####
-        # if not use_rl:
-        #     if e >= 20:
-        #         use_rl = True
-        #         switch_to_rl = True
-        #         patience = 0
-        #         optim = Adam(model.parameters(), lr=5e-6)
-        #         print("Switching to RL")
-        #######
+        if patience == 10:
+            print('patience reached.')
+            exit_train = True
 
         if not os.path.isdir(args.model_path):
             os.makedirs(args.model_path)
-
-        if switch_to_rl and not best:
-            data = torch.load(os.path.join(args.model_path, '%s_best.pth' % args.mode))
-            torch.set_rng_state(data['torch_rng_state'])
-            torch.cuda.set_rng_state(data['cuda_rng_state'])
-            np.random.set_state(data['numpy_rng_state'])
-            random.setstate(data['random_rng_state'])
-            model.load_state_dict(data['state_dict'])
-            print('Resuming from epoch %d, validation loss %f, and best cider %f' % (
-                data['epoch'], data['val_loss'], data['best_cider']))
-        if use_rl:
-            val_loss = 0.0
 
         torch.save({
             'torch_rng_state': torch.get_rng_state(),
@@ -409,7 +358,6 @@ if __name__ == '__main__':
             'scheduler': scheduler.state_dict(),
             'patience': patience,
             'best_cider': best_cider,
-            'use_rl': use_rl,
         }, os.path.join(args.model_path, '%s_last.pth' % args.mode))
 
         if best:
