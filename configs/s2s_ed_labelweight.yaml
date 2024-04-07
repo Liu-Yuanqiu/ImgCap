@@ -1,4 +1,4 @@
-exp_name: 'ed_xe'
+exp_name: 'ed_labelweight'
 mode: 's2s'
 resume_last: false
 resume_best: false
@@ -6,7 +6,7 @@ logs_folder: './ckpts/logs/'
 
 optimizer:
   batch_size: 64
-  num_workers: 8
+  num_workers: 4
 
 dataset:
   root_path: '../mscoco'

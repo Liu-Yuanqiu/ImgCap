@@ -50,17 +50,17 @@ class Transformer(nn.Module):
             enc_img = l(enc_img, enc_img, enc_img, enc_mask)
         
         enc_txt = self.img2txt(gri_feat)
-        vocab = self.fc.weight
+        vocab = self.word_emb.weight
         for l in self.encoder_txt:
             enc_txt = l(enc_txt, enc_txt, enc_txt, enc_mask)
+            enc_txt = torch.softmax(enc_txt @ vocab.t(), -1) @ vocab
         
-            enc_txt = torch.sigmoid(enc_txt @ vocab.t()) @ vocab
-        enc_att = torch.mean(self.fc(enc_txt), 1)
+        enc_txt = self.fc(enc_txt)
+        enc_att = torch.mean(enc_txt, 1)
 
-        # _, en_ids = torch.max(enc_fea, dim=-1)
-        # pos_indx = torch.arange(1, en_ids.shape[-1] + 1, device='cuda').view(1, -1)
-        # out = self.word_emb(en_ids) + self.pos_emb(pos_indx)
-        out = enc_txt
+        _, en_ids = torch.max(enc_txt, dim=-1)
+        pos_indx = torch.arange(1, en_ids.shape[-1] + 1, device='cuda').view(1, -1)
+        out = self.word_emb(en_ids) + self.pos_emb(pos_indx)
         for l in self.decoder:
             out = l(out, out, enc_img, enc_mask)
         out = self.fc(out)

@@ -1,0 +1,44 @@
+exp_name: 'ed_xe'
+mode: 's2s'
+resume_last: false
+resume_best: false
+logs_folder: './ckpts/logs/'
+
+optimizer:
+  batch_size: 64
+  num_workers: 4
+
+dataset:
+  root_path: '../mscoco'
+  use_cache: true
+  vocab_path: '../mscoco/txt/coco_vocabulary.txt'
+  transform:
+    size: [384, 640] # (h, w)
+    resize_name: maxwh # normal, minmax, maxwh; maxwh is computationally friendly for training
+    randaug: True
+
+model:
+  use_reg_feat: false
+  use_gri_feat: true
+  use_reg_label: false
+  d_model: 512
+  swin: 
+    frozen_stages: 2
+    backbone_name: 'swin_base_win7_384_22k' # ['swin_small', 'swin_base_win7_384_22k']
+    pre_trained: './ckpts/swin/swin_base_patch4_window12_384_22k.pth' # 'imagenet'
+  det:
+    checkpoint: './ckpts/swin_dert/detector_checkpoint_4ds.pth' 
+    d_model: 512
+    dim_feedforward: 1024
+    num_heads: 8
+    num_layers: 6
+    num_levels: 4
+    num_points: 4
+    num_queries: 150
+    num_classes: 1849
+    has_attr_head: True
+    num_attr_classes: 400
+    dropout: 0.1
+    activation: 'relu'
+    return_intermediate: True
+    with_box_refine: True

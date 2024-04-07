@@ -22,7 +22,7 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 test = False
@@ -93,14 +93,14 @@ def evaluate_loss(model, dataloader):
                 tokens_kd = tokens_kd[:, :seq_len].contiguous()
                 loss_ce = loss_fn(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
                 # ML
-                # loss_ml = loss_fn_1(en_out, labels)
-                loss = loss_ce # + loss_ml
+                loss_ml = loss_fn_1(en_out, labels)
+                loss = loss_ce + loss_ml
                 # loss.backward()
 
                 this_loss = loss.item()
                 running_loss += this_loss
 
-                pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item())
+                pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss_ml=loss_ml.item())
                 pbar.update()
 
                 if test:
@@ -156,16 +156,16 @@ def train_xe(model, dataloader, optim, text_field):
             loss_ce = loss_fn(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
             
             # ML
-            # loss_ml = loss_fn_1(en_out, labels)
+            loss_ml = loss_fn_1(en_out, labels)
 
-            loss = loss_ce # + loss_ml
+            loss = loss_ce + loss_ml
             loss.backward()
 
             optim.step()
             this_loss = loss.item()
             running_loss += this_loss
 
-            pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item())
+            pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss_ml=loss_ml.item())
             pbar.update()
 
             if test:
@@ -232,7 +232,7 @@ def train_scst(model, dataloader, optim, cider, text_field):
 if __name__ == '__main__':
     multiprocessing.set_start_method('spawn')
     device = torch.device('cuda')
-    args = OmegaConf.load('configs/s2s.yaml')
+    args = OmegaConf.load('configs/s2s_ed.yaml')
     print(args)
 
     writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.mode, args.exp_name))
