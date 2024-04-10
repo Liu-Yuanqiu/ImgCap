@@ -74,8 +74,8 @@ class PairedCollator(DictionaryCollator):
 
         # truncate
         tokens_kd_new = [c[:self.max_len] for c in b['tokens_kd']]
-        # max_len = max([len(c) for c in b['tokens_kd']])
-        max_len = 20
+        max_len = max([len(c) for c in b['tokens_kd']])
+        # max_len = 20
 
         padded = []
         for c in tokens_kd_new:
@@ -121,7 +121,7 @@ class PairedDataset:
 
         max_len = max( max([len(x) for x in token_gt]), len(token_kd) )
         # max_len = 20
-        label1 = np.ones((self.vocab_size), dtype=np.float32)
+        label = np.zeros((self.vocab_size), dtype=np.float32)
         for i in range(max_len):
             for j in range(len(token_gt)):
                 if i >= len(token_gt[j]):
@@ -129,19 +129,16 @@ class PairedDataset:
                 else:
                     wid = token_gt[j][i]
                     if wid not in [0, 1, 2, 3]:
-                        label1[wid] += 1
+                        label[wid] += 1
                     else:
                         pass
-        label = label1.argsort()[-20:][::-1]
-        mask = label1[label] == 1
-        label[mask] = 1
-        # for i in range(max_len):
-        #     if i >= len(token_kd):
-        #         pass
-        #     else:
-        #         wid = token_kd[i]
-        #         if wid not in [0, 1, 2, 3]:
-        #             label[wid] = 1
+        for i in range(max_len):
+            if i >= len(token_kd):
+                pass
+            else:
+                wid = token_kd[i]
+                if wid not in [0, 1, 2, 3]:
+                    label[wid] += 1
 
         label_out = np.zeros((60, self.vocab_size), dtype=np.float32)
         for i in range(max_len):
@@ -163,7 +160,6 @@ class PairedDataset:
                     label_out[i][wid] = self.kd_score
 
         if self.use_cache:
-            # filepath = filepath.replace("swin_dert_grid", "swin_dert_region")
             with np.load(filepath, allow_pickle=True) as data_grid:
                 grid = data_grid['grid']
                 grid = np.array(grid).astype('float32')
@@ -209,7 +205,7 @@ class COCO_KD:
             ids_val = load_txt(os.path.join(root_path, 'txt', 'coco_val_image_id.txt'))
             ids_test = load_txt(os.path.join(root_path, 'txt', 'coco_test_image_id.txt'))
             
-            samples = json.load(open(os.path.join(root_path, "annotations", 'captions_transformer.json'), "r"))
+            samples = json.load(open(os.path.join(root_path, "annotations", 'captions_kd3.json'), "r"))
 
             for sam in samples:
                 img_id = sam['image_id']

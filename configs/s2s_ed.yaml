@@ -1,11 +1,11 @@
-exp_name: 'ed'
-mode: 's2s'
-resume_last: false
+exp_name: 'eed_weightloss'
+mode: 's2s2'
+resume_last: true
 resume_best: false
 logs_folder: './ckpts/logs/'
 
 optimizer:
-  batch_size: 64
+  batch_size: 32
   num_workers: 4
 
 dataset:

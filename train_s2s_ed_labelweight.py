@@ -1,7 +1,7 @@
 import random
 import evaluation
 from evaluation import Cider
-from data.dataset_kd import build_coco_dataloaders
+from data.dataset_kd1 import build_coco_dataloaders
 from models.detector import build_detector
 from models.mlnaic import Transformer
 from models.losses import MLCrossEntropy
