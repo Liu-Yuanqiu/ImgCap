@@ -24,12 +24,6 @@ class Transformer(nn.Module):
                                                        attention_module=attention_module, 
                                                        attention_module_kwargs=attention_module_kwargs) 
                                                        for _ in range(N_en)])
-        # self.encoder_txt = nn.ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
-        #                                         self_att_module=attention_module, 
-        #                                         enc_att_module=attention_module, 
-        #                                         self_att_module_kwargs=attention_module_kwargs, 
-        #                                         enc_att_module_kwargs=attention_module_kwargs) 
-        #                                         for _ in range(N_de)])
         self.decoder = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
                                                 self_att_module=attention_module, 
                                                 enc_att_module=attention_module, 
@@ -39,7 +33,7 @@ class Transformer(nn.Module):
         
         self.img2txt = nn.Linear(d_model, d_model)
         self.word_emb = nn.Embedding(vocab_size, d_model, padding_idx=padding_idx)
-        self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=True)
+        self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
         self.fc = nn.Linear(d_model, vocab_size, bias=False)
         self.fc1 = nn.Linear(d_model, vocab_size, bias=False)
 
@@ -61,42 +55,31 @@ class Transformer(nn.Module):
         vocab = self.word_emb.weight
         enc_txt = torch.softmax(enc_txt @ vocab.t(), -1) @ vocab
         for l in self.encoder_txt:
-            enc_txt = l(enc_txt, enc_txt, enc_img, enc_mask)
+            enc_txt = l(enc_txt, enc_txt, enc_txt)
         
         enc_txt_out = enc_txt[:, :20]
         enc_txt_out = self.fc(enc_txt_out)
-        # enc_att = torch.mean(enc_txt, 1)
 
         _, en_ids = torch.max(enc_txt_out, dim=-1)
-        # mask = (en_ids == 1).unsqueeze(1).unsqueeze(1)
         pos_indx = torch.arange(1, en_ids.shape[-1] + 1, device='cuda').view(1, -1)
-        # out = self.word_emb(en_ids) + self.pos_emb(pos_indx)
         out = self.pos_emb(pos_indx).repeat(en_ids.shape[0], 1, 1)
         out1 = self.word_emb(en_ids)
-        # enc_txt1 = torch.where(enc_txt1<0, torch.tensor(0, dtype=torch.float32, device=enc_txt1.device), enc_txt1)
-        # en_ids = torch.softmax(enc_txt1, -1)
-        # out = en_ids @ vocab
         for i,l in enumerate(self.decoder):
             mask = None
-            # h = self.entropy(out)
-            # h_avg = torch.mean(h, dim=-1, keepdim=True)
-            # h_var = torch.var(h, dim=-1, keepdim=True)
-            # # mask = (h > h_avg).unsqueeze(1).unsqueeze(1)
-            # if i == 0:
-            #     mask = (h > (h_avg - h_var)).unsqueeze(1).unsqueeze(1)
-            # elif i == 1:
-            #     mask = (h > h_avg).unsqueeze(1).unsqueeze(1)
-            # else:
-            #     mask = (h > (h_avg + h_var)).unsqueeze(1).unsqueeze(1)
+            h = self.entropy(out)
+            h_avg = torch.mean(h, dim=-1, keepdim=True)
+            h_std = torch.std(h, dim=-1, keepdim=True)
+            if i == 1:
+                mask = (h > h_avg).unsqueeze(1).unsqueeze(1)
+            elif i == 2:
+                mask = (h > (h_avg + h_std)).unsqueeze(1).unsqueeze(1)
             out = l(out, out1, enc_img, enc_mask, mask)
         out = self.fc(out)
         
         return F.log_softmax(enc_txt_out, dim=-1), F.log_softmax(out, dim=-1)
-        # return enc_att, F.log_softmax(out, dim=-1)
 
     def entropy(self, out):
         logit = torch.softmax(self.fc(out), -1)
-        # logit = F.log_softmax(logit, dim=-1)
         h = -torch.sum(logit * torch.log(logit), -1)
         return h
     

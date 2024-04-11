@@ -33,7 +33,7 @@ class Transformer(nn.Module):
         
         self.img2txt = nn.Linear(d_model, d_model)
         self.word_emb = nn.Embedding(vocab_size, d_model, padding_idx=padding_idx)
-        self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=True)
+        self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
         self.fc = nn.Linear(d_model, vocab_size, bias=False)
         self.fc1 = nn.Linear(d_model, vocab_size, bias=False)
 
@@ -52,6 +52,8 @@ class Transformer(nn.Module):
             enc_img = l(enc_img, enc_img, enc_img, enc_mask)
         
         enc_txt = self.img2txt(enc_img)
+        vocab = self.word_emb.weight
+        enc_txt = torch.softmax(enc_txt @ vocab.t(), -1) @ vocab
         for l in self.encoder_txt:
             enc_txt = l(enc_txt, enc_txt, enc_txt)
         
@@ -60,10 +62,10 @@ class Transformer(nn.Module):
 
         _, en_ids = torch.max(enc_txt_out, dim=-1)
         pos_indx = torch.arange(1, en_ids.shape[-1] + 1, device='cuda').view(1, -1)
-        out = self.word_emb(en_ids) + self.pos_emb(pos_indx)
-
+        out = self.pos_emb(pos_indx).repeat(en_ids.shape[0], 1, 1)
+        out1 = self.word_emb(en_ids)
         for l in self.decoder:
-            out = l(out, enc_img, enc_mask)
+            out = l(out, out1, enc_img, enc_mask)
         out = self.fc(out)
         
         return F.log_softmax(enc_txt_out, dim=-1), F.log_softmax(out, dim=-1)
@@ -119,9 +121,9 @@ class DecoderLayer(nn.Module):
         self.lnorm2 = nn.LayerNorm(d_model)
         self.pwff = PositionWiseFeedForward(d_model, d_ff, dropout)
 
-    def forward(self, input, enc_output, mask_enc_att, mask=None):
+    def forward(self, input, input1, enc_output, mask_enc_att, mask=None):
         # MHA+AddNorm
-        self_att = self.self_att(input, input, input, mask)
+        self_att = self.self_att(input, input1, input1, mask)
         self_att = self.lnorm1(input + self.dropout1(self_att))
         # MHA+AddNorm
         enc_att = self.enc_att(self_att, enc_output, enc_output, mask_enc_att)

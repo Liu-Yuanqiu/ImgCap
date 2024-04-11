@@ -6,7 +6,7 @@ logs_folder: './ckpts/logs/'
 
 optimizer:
   batch_size: 64
-  num_workers: 4
+  num_workers: 8
 
 dataset:
   root_path: '../mscoco'

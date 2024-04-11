@@ -1,5 +1,5 @@
-exp_name: 'eed_weightloss_inpe'
-mode: 's2s2'
+exp_name: 'pe_mask'
+mode: 's2s0411'
 resume_last: false
 resume_best: false
 logs_folder: './ckpts/logs/'
