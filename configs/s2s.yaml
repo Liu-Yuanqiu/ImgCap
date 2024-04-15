@@ -1,7 +1,7 @@
-exp_name: 'cmal'
-mode: 's2s2'
+exp_name: '0415'
+mode: 's2s'
 resume_last: false
-resume_best: true
+resume_best: false
 logs_folder: './ckpts/logs/'
 
 optimizer:

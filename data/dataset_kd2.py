@@ -122,26 +122,28 @@ class PairedDataset:
         max_len = max( max([len(x) for x in token_gt]), len(token_kd) )
         # max_len = 20
         label1 = np.ones((self.vocab_size), dtype=np.float32)
+        # for i in range(max_len):
+        #     for j in range(len(token_gt)):
+        #         if i >= len(token_gt[j]):
+        #             pass
+        #         else:
+        #             wid = token_gt[j][i]
+        #             if wid not in [0, 1, 2, 3]:
+        #                 label1[wid] += 1
+        #             else:
+        #                 pass
+        
         for i in range(max_len):
-            for j in range(len(token_gt)):
-                if i >= len(token_gt[j]):
-                    pass
-                else:
-                    wid = token_gt[j][i]
-                    if wid not in [0, 1, 2, 3]:
-                        label1[wid] += 1
-                    else:
-                        pass
+            if i >= len(token_kd):
+                pass
+            else:
+                wid = token_kd[i]
+                if wid not in [0, 1, 2, 3]:
+                    label1[wid] += 1
+        
         label = label1.argsort()[-20:][::-1]
         mask = label1[label] == 1
         label[mask] = 1
-        # for i in range(max_len):
-        #     if i >= len(token_kd):
-        #         pass
-        #     else:
-        #         wid = token_kd[i]
-        #         if wid not in [0, 1, 2, 3]:
-        #             label[wid] = 1
 
         label_out = np.zeros((60, self.vocab_size), dtype=np.float32)
         for i in range(max_len):
@@ -285,78 +287,3 @@ def build_coco_dataloaders(config=None, device='cpu'):
         pin_memory=True
     )
     return dataloaders, text_field
-
-def build_coco_dataloaders_test4w(root_path="../mscoco", vocab_path="../mscoco/txt/coco_vocabulary.txt"):
-    text_field = TextField(vocab_path=vocab_path)
-
-    ids_test4w = load_txt(os.path.join(root_path, 'txt', 'coco_test4w_image_id.txt'))
-    samples4w = []
-    for id in ids_test4w:
-        filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id)+".npz")
-        s = {"id":id, "image": filepath}
-        samples4w.append(s)
-
-    text4w = PairedDataset_TEST(samples4w)
-    loader_test4w = DataLoader(
-        text4w,
-        batch_size=64,
-        collate_fn=DictionaryCollator_TEST(),
-        num_workers=4,
-        shuffle=False,
-        pin_memory=True
-    )
-    ids_val3w = load_txt(os.path.join(root_path, 'txt', 'coco_val3w_image_id.txt'))
-    samples3w = []
-    for id in ids_val3w:
-        filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id)+".npz")
-        s = {"id":id, "image": filepath}
-        samples3w.append(s)
-
-    text3w = PairedDataset_TEST(samples3w)
-    loader_val3w = DataLoader(
-        text3w,
-        batch_size=64,
-        collate_fn=DictionaryCollator_TEST(),
-        num_workers=4,
-        shuffle=False,
-        pin_memory=True
-    )
-    return loader_test4w, loader_val3w, text_field
-
-class PairedDataset_TEST:
-    def __init__(self, examples):
-        self.examples = examples
-
-    def __getitem__(self, index):
-        id = self.examples[index]['id']
-        filepath = self.examples[index]['image']
-        with np.load(filepath, allow_pickle=True) as data_grid:
-            grid = data_grid['grid']
-            grid = np.array(grid).astype('float32')
-            mask = data_grid['mask']
-            mask = np.array(mask).astype('bool')
-        return id, grid, mask
-
-    def __len__(self):
-        return len(self.examples)
-
-class DictionaryCollator_TEST:
-    def __init__(self, use_cache=None):
-        self.use_cache = use_cache
-
-    def __call__(self, batch):
-        outputs = {}
-
-        image_ids = [item[0] for item in batch]
-        outputs['image_id'] = image_ids
-        grid = [item[1] for item in batch]
-        mask = [item[2] for item in batch]
-        grid = torch.from_numpy(np.stack(grid, 0)) #.to(self.device)
-        mask = torch.from_numpy(np.stack(mask, 0)) #.to(self.device)
-        
-        samples = {}
-        samples['grid'] = grid
-        samples['mask'] = mask
-        outputs['samples'] = samples
-
-        return outputs

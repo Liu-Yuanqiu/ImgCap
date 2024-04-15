@@ -12,6 +12,7 @@ import warnings
 import shutil
 import pickle
 import time
+import itertools
 
 from .vocab import Vocab
 from .utils import get_tokenizer
@@ -215,9 +216,11 @@ class TextField:
                 caption.append(word)
             
             if deduplication:
-                for i in range(len(caption)-1, 0, -1):
-                    if caption[i] == caption[i-1]:
-                        del caption[i]
+                # for i in range(len(caption)-1, 0, -1):
+                #     if caption[i] == caption[i-1]:
+                #         del caption[i]
+                caption = [k for k, g in itertools.groupby(caption)]
+
             if join_words:
                 caption = ' '.join(caption)
             captions.append(caption)

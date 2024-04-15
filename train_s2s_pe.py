@@ -185,7 +185,6 @@ def train_scst(model, dataloader, optim, cider, text_field):
     running_loss = .0
     beam_size = 1
     seq_len = 20
-    # coco = COCO("../mscoco/misc/captions_train2014_kd_3.json")
 
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
@@ -200,54 +199,34 @@ def train_scst(model, dataloader, optim, cider, text_field):
             sents_logprobs, sents = torch.topk(logit, 2)
         
             sents_copy = sents[:,:,:1].squeeze(-1)
-            caps_gen = text_field.decode(sents_copy.view(-1, sents_copy.shape[-1]))
-            caps_gen, caps_gt = tokenizer_pool.map(evaluation.PTBTokenizer.tokenize, [caps_gen, caps_gt])
-            rewards_sample = cider.compute_score(caps_gt, caps_gen)[1].astype(np.float32)
-            rewards_sample = np.repeat(rewards_sample.reshape(batch_size, 1), seq_len, axis=1)
+            caps_gen = text_field.decode(sents_copy.view(-1, sents_copy.shape[-1]), deduplication=True)
+            caps_gt1 = caps_gt
+            caps_gen, caps_gt1 = tokenizer_pool.map(evaluation.PTBTokenizer.tokenize, [caps_gen, caps_gt1])
+            rewards_sample = cider.compute_score(caps_gt1, caps_gen)[1].astype(np.float32)
+            rewards_sample = torch.from_numpy(rewards_sample).to(device).reshape(batch_size, 1).repeat(1, seq_len)
 
-            sents_0 = sents[:,:,:1].squeeze(-1).data.cpu().numpy().tolist()
-            sents_1 = sents[:,:,1:].squeeze(-1).data.cpu().numpy().tolist()
-            sents_word = np.repeat(sents_0, seq_len, axis=0)
-            
-            diag_0 = np.zeros((batch_size, seq_len), dtype=int)
-            diag_0 = diag_0 - 1
-            seq_diag = []
-            diag_diag = []
-            for i in range(batch_size):
-                x = np.diag(sents_1[i])
-                seq_diag.append(x)
-                xx = np.diag(diag_0[i])
-                diag_diag.append(xx)
-            sent_word_diag = np.vstack(seq_diag)
-            sent_word_diag_0 = np.vstack(diag_diag)
-            sent_word_diag_0 = sent_word_diag_0 + 1
-            sents_word = sents_word*sent_word_diag_0 + sent_word_diag
-            # sents_word = np.ones((batch_size*seq_len, seq_len), dtype=int)
-            # for i in range(batch_size):
-            #     sen = sents_0[i]
-            #     for j in range(seq_len):
-            #         sents_word[i*seq_len+j] = sen
-            #         sents_word[i*seq_len+j][j] = sents_1[i][j]
-            caps_gt = list(itertools.chain(*([c, ] * seq_len for c in caps_gt)))
-            caps_gen_word = text_field.decode(sents_word)
-            caps_gen_word, caps_gt = tokenizer_pool.map(evaluation.PTBTokenizer.tokenize, [caps_gen_word, caps_gt])
-            reward = cider.compute_score(caps_gt, caps_gen_word)[1].astype(np.float32)
-            reward_word = reward_word.reshape(batch_size, seq_len)
-            sents_logprobs_0 = sents_logprobs[:,:,:1].squeeze(-1).detach().cpu().numpy()
-            sents_logprobs_1 = sents_logprobs[:,:,1:].squeeze(-1).detach().cpu().numpy()
-            reward_baseline = (sents_logprobs_0 * rewards_sample)/(sents_logprobs_0+sents_logprobs_1) + (sents_logprobs_1 * reward_word)/(sents_logprobs_0+sents_logprobs_1)
+            sents_0 = sents[:,:,:1].squeeze(-1).unsqueeze(1).repeat(1, seq_len, 1)
+            sents_1 = sents[:,:,1:].squeeze(-1).unsqueeze(1).repeat(1, seq_len, 1)
+            x_1 = torch.eye(seq_len).to(device).unsqueeze(0).unsqueeze(0)
+            x_0 = torch.where(x_1==1, 0, 1)
+            sents_re = sents_0*x_0 + sents_1*x_1
+            caps_re = text_field.decode(sents_re.view(-1, sents_re.shape[-1]), deduplication=True)
+            caps_gt2 = list(itertools.chain(*([c, ] * seq_len for c in caps_gt)))
+            caps_re, caps_gt2 = tokenizer_pool.map(evaluation.PTBTokenizer.tokenize, [caps_re, caps_gt2])
+            rewards_re = cider.compute_score(caps_gt2, caps_re)[1].astype(np.float32)
+            rewards_re = torch.from_numpy(rewards_re).to(device).reshape(batch_size, seq_len)
 
-            reward = torch.from_numpy(rewards_sample).cuda()
-            reward_baseline = torch.from_numpy(reward_baseline).cuda()
-            mask = sents[:,:,:1].squeeze(-1) > 0
-            loss = -sents_logprobs[:,:,:1].squeeze(-1) * mask * (reward - reward_baseline)
-            loss = torch.sum(loss) / torch.sum(mask)
+            sents_logprobs_0 = sents_logprobs[:,:,:1].squeeze(-1)
+            sents_logprobs_1 = sents_logprobs[:,:,1:].squeeze(-1)
+            reward_baseline = (sents_logprobs_0*rewards_sample + sents_logprobs_1*rewards_re)/(sents_logprobs_0+sents_logprobs_1)
+            loss = - sents_logprobs_0 * (rewards_sample - reward_baseline)
+            loss = loss.mean()
 
             loss.backward()
             optim.step()
 
             running_loss += loss.item()
-            running_reward += reward.mean().item()
+            running_reward += rewards_sample.mean().item()
             running_reward_baseline += reward_baseline.mean().item()
             pbar.set_postfix(loss=running_loss / (it + 1), reward=running_reward / (it + 1),
                              reward_baseline=running_reward_baseline / (it + 1))
@@ -288,12 +267,12 @@ if __name__ == '__main__':
         base_lr = 0.0001
         if s <= 2:
             lr = base_lr * (s+1) / 4
-        elif s <= 150:
+        elif s <= 60:
             lr = base_lr
-        elif s <= 150:
+        elif s <= 69:
             lr = base_lr * 0.2
         else:
-            lr = base_lr * 0.2 * 0.2
+            lr = base_lr * 0.05
         print("Epoch: %d, Learning Rate: %f" % (s, lr))
         return lr
 
@@ -306,7 +285,7 @@ if __name__ == '__main__':
     best_cider = .0
     patience = 0
     start_epoch = 0
-    use_rl = False
+    use_rl = True
 
     args.model_path = os.path.join("./ckpts", args.mode, args.exp_name)
     if args.resume_last or args.resume_best:
@@ -348,6 +327,8 @@ if __name__ == '__main__':
             # Validation loss
             val_loss = evaluate_loss(model, dataloaders['valid'], w)
             writer.add_scalar('data/val_loss', val_loss, e)
+        else:
+            val_loss = 0.0
 
         # Validation scores
         scores = evaluate_metrics(model, dataloaders['valid'], text_field)
@@ -379,7 +360,7 @@ if __name__ == '__main__':
             patience += 1
 
         exit_train = False
-        if patience == 10:
+        if patience == 5:
             print('patience reached.')
             exit_train = True
 

@@ -5,3 +5,5 @@ models/detector/ops/build/
 models/detector/ops/MultiScaleDeformableAttention.egg-info
 models/detector/ops/MultiScaleDeformableAttention.cp39-win_amd64.pyd
 models/detector/ops/MultiScaleDeformableAttention.cpython-39-x86_64-linux-gnu.so
+captions_test2014_results.json
+captions_val2014_results.json

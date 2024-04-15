@@ -3,7 +3,7 @@ import evaluation
 from evaluation import Cider
 from data.dataset_kd import build_coco_dataloaders
 from models.detector import build_detector
-from models.s2s import Transformer
+from models.s2s.transformer import Transformer
 from models.losses import MLCrossEntropy
 from pycocotools.coco import COCO
 import torch
@@ -23,7 +23,7 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 test = False
@@ -43,7 +43,7 @@ def evaluate_loss(model, dataloader, w):
                 samples['mask'] = samples['mask'].to(device)
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
-                en_out, out = model(samples)
+                en_out, out = model(samples, labels)
 
                 # optim.zero_grad()
                 # XE
@@ -53,14 +53,14 @@ def evaluate_loss(model, dataloader, w):
                 loss_ce = loss_fn(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
 
                 # ML
-                loss_ml = loss_fn(en_out.view(-1, en_out.shape[-1]), labels.view(-1))
-                loss = loss_ce * w + loss_ml
+                # loss_ml = loss_fn(en_out.view(-1, en_out.shape[-1]), labels.view(-1))
+                loss = loss_ce # * w + loss_ml
                 # loss.backward()
 
                 this_loss = loss.item()
                 running_loss += this_loss
 
-                pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss_ml=loss_ml.item())
+                pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item()) #, loss_ml=loss_ml.item())
                 pbar.update()
 
                 if test:
@@ -76,11 +76,12 @@ def evaluate_metrics(model, dataloader, text_field):
     gts = {}
     with tqdm(desc='Epoch %d - evaluation' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
-            image_id, samples, caps_gt = batch['image_id'], batch['samples'], batch['caps_gt']
+            image_id, samples, caps_gt, labels = batch['image_id'], batch['samples'], batch['caps_gt'], batch['labels']
             samples['grid'] = samples['grid'].to(device)
             samples['mask'] = samples['mask'].to(device)
+            labels = labels.to(device)
             with torch.no_grad():
-                _, logit = model(samples)
+                _, logit = model(samples, labels)
             
             _, out = torch.max(logit, -1)
             caps_gen = text_field.decode(out, join_words=False, deduplication=True)
@@ -106,7 +107,7 @@ def train_xe(model, dataloader, optim, text_field, w):
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             tokens_kd = tokens_kd.to(device)
-            en_out, out = model(samples)
+            en_out, out = model(samples, labels)
             
             optim.zero_grad()
             # XE
@@ -116,16 +117,16 @@ def train_xe(model, dataloader, optim, text_field, w):
             loss_ce = loss_fn(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
 
             # ML
-            loss_ml = loss_fn(en_out.view(-1, en_out.shape[-1]), labels.view(-1))
+            # loss_ml = loss_fn(en_out.view(-1, en_out.shape[-1]), labels.view(-1))
 
-            loss = loss_ce * w + loss_ml
+            loss = loss_ce # * w + loss_ml
             loss.backward()
 
             optim.step()
             this_loss = loss.item()
             running_loss += this_loss
 
-            pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss_ml=loss_ml.item())
+            pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item()) #, loss_ml=loss_ml.item())
             pbar.update()
 
             if test:
@@ -309,7 +310,7 @@ if __name__ == '__main__':
     best_cider = .0
     patience = 0
     start_epoch = 0
-    use_rl = True
+    use_rl = False
 
     args.model_path = os.path.join("./ckpts", args.mode, args.exp_name)
     if args.resume_last or args.resume_best:

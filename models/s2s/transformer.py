@@ -37,7 +37,7 @@ class Transformer(nn.Module):
         self.fc = nn.Linear(d_model, vocab_size, bias=False)
         self.fc1 = nn.Linear(d_model, vocab_size, bias=False)
 
-    def forward(self, images):
+    def forward(self, images, labels):
         if self.detector is None:
             gri_feat, gri_mask = images['grid'], images['mask']
             gri_feat = self.embed_image(gri_feat)
@@ -51,24 +51,25 @@ class Transformer(nn.Module):
         for l in self.encoder_img:
             enc_img = l(enc_img, enc_img, enc_img, enc_mask)
         
-        enc_txt = self.img2txt(enc_img)
-        vocab = self.word_emb.weight
-        enc_txt = torch.softmax(enc_txt @ vocab.t(), -1) @ vocab
-        for l in self.encoder_txt:
-            enc_txt = l(enc_txt, enc_txt, enc_txt)
+        # enc_txt = self.img2txt(enc_img)
+        # vocab = self.word_emb.weight
+        # enc_txt = torch.softmax(enc_txt @ vocab.t(), -1) @ vocab
+        # for l in self.encoder_txt:
+        #     enc_txt = l(enc_txt, enc_txt, enc_txt)
         
-        enc_txt_out = enc_txt[:, :20]
-        enc_txt_out = self.fc(enc_txt_out)
+        # enc_txt_out = enc_txt[:, :20]
+        # enc_txt_out = self.fc(enc_txt_out)
 
-        _, en_ids = torch.max(enc_txt_out, dim=-1)
-        pos_indx = torch.arange(1, en_ids.shape[-1] + 1, device='cuda').view(1, -1)
-        out = self.pos_emb(pos_indx).repeat(en_ids.shape[0], 1, 1)
-        out1 = self.word_emb(en_ids)
+        # _, en_ids = torch.max(enc_txt_out, dim=-1)
+        # pos_indx = torch.arange(1, en_ids.shape[-1] + 1, device='cuda').view(1, -1)
+        # out = self.pos_emb(pos_indx).repeat(en_ids.shape[0], 1, 1)
+        # out1 = self.word_emb(en_ids)
+        out = self.word_emb(labels)
         for l in self.decoder:
-            out = l(out, out1, enc_img, enc_mask)
+            out = l(out, out, enc_img, enc_mask)
         out = self.fc(out)
         
-        return F.log_softmax(enc_txt_out, dim=-1), F.log_softmax(out, dim=-1)
+        return None, F.log_softmax(out, dim=-1)
 
     def entropy(self, out):
         logit = torch.softmax(self.fc(out), -1)
