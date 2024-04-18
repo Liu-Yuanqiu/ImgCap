@@ -4,7 +4,7 @@ from evaluation import Cider
 from data.dataset_kd import build_coco_dataloaders
 from models.detector import build_detector
 from models.s2s.transformer import Transformer
-from models.losses import MLCrossEntropy
+from models.losses import MLCrossEntropy, FocalLossWithLogitsNegLoss
 from pycocotools.coco import COCO
 import torch
 from torch.optim import Adam
@@ -23,7 +23,7 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 test = False
@@ -43,24 +43,26 @@ def evaluate_loss(model, dataloader, w):
                 samples['mask'] = samples['mask'].to(device)
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
-                en_out, out = model(samples, labels)
+                txt_logit, logit = model(samples)
 
                 # optim.zero_grad()
                 # XE
-                seq_len = min(out.shape[1], tokens_kd.shape[1])
-                out_ce = out[:, :seq_len].contiguous()
+                seq_len = min(logit.shape[1], tokens_kd.shape[1])
+                out_ce = logit[:, :seq_len].contiguous()
                 tokens_kd = tokens_kd[:, :seq_len].contiguous()
-                loss_ce = loss_fn(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+                loss_ce = loss_fn_ce(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
 
                 # ML
-                # loss_ml = loss_fn(en_out.view(-1, en_out.shape[-1]), labels.view(-1))
-                loss = loss_ce # * w + loss_ml
+                loss_ml = loss_fn_fl(txt_logit, labels)
+                loss_ml = loss_ml.mean()
+
+                loss = loss_ce + loss_ml
                 # loss.backward()
 
                 this_loss = loss.item()
                 running_loss += this_loss
 
-                pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item()) #, loss_ml=loss_ml.item())
+                pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss_ml=loss_ml.item())
                 pbar.update()
 
                 if test:
@@ -81,7 +83,7 @@ def evaluate_metrics(model, dataloader, text_field):
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             with torch.no_grad():
-                _, logit = model(samples, labels)
+                _, logit = model(samples)
             
             _, out = torch.max(logit, -1)
             caps_gen = text_field.decode(out, join_words=False, deduplication=True)
@@ -107,26 +109,27 @@ def train_xe(model, dataloader, optim, text_field, w):
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             tokens_kd = tokens_kd.to(device)
-            en_out, out = model(samples, labels)
+            txt_logit, logit = model(samples)
             
             optim.zero_grad()
             # XE
-            seq_len = min(out.shape[1], tokens_kd.shape[1])
-            out_ce = out[:, :seq_len].contiguous()
+            seq_len = min(logit.shape[1], tokens_kd.shape[1])
+            out_ce = logit[:, :seq_len].contiguous()
             tokens_kd = tokens_kd[:, :seq_len].contiguous()
-            loss_ce = loss_fn(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+            loss_ce = loss_fn_ce(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
 
-            # ML
-            # loss_ml = loss_fn(en_out.view(-1, en_out.shape[-1]), labels.view(-1))
+            # focal loss
+            loss_ml = loss_fn_fl(txt_logit, labels)
+            loss_ml = loss_ml.mean()
 
-            loss = loss_ce # * w + loss_ml
+            loss = loss_ce + loss_ml
             loss.backward()
 
             optim.step()
             this_loss = loss.item()
             running_loss += this_loss
 
-            pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item()) #, loss_ml=loss_ml.item())
+            pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss_ml=loss_ml.item())
             pbar.update()
 
             if test:
@@ -297,7 +300,7 @@ if __name__ == '__main__':
         elif s <= 30:
             lr = base_lr * 0.2
         else:
-            lr = base_lr * 0.5
+            lr = base_lr * 0.2 * 0.2
         print("Epoch: %d, Learning Rate: %f" % (s, lr))
         return lr
 
@@ -305,8 +308,8 @@ if __name__ == '__main__':
     optim = Adam(model.parameters(), lr=1, betas=(0.9, 0.98))
     scheduler = LambdaLR(optim, lambda_lr)
     
-    loss_fn = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
-    loss_fn_1 = MLCrossEntropy()
+    loss_fn_ce = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
+    loss_fn_fl = FocalLossWithLogitsNegLoss()
     best_cider = .0
     patience = 0
     start_epoch = 0

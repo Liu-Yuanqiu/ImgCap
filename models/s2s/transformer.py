@@ -31,13 +31,12 @@ class Transformer(nn.Module):
                                                 enc_att_module_kwargs=attention_module_kwargs) 
                                                 for _ in range(N_de)])    
         
-        self.img2txt = nn.Linear(d_model, d_model)
         self.word_emb = nn.Embedding(vocab_size, d_model, padding_idx=padding_idx)
         self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
-        self.fc = nn.Linear(d_model, vocab_size, bias=False)
-        self.fc1 = nn.Linear(d_model, vocab_size, bias=False)
+        self.fc_tag = nn.Linear(d_model, vocab_size, bias=False)
+        self.fc_word = nn.Linear(d_model, vocab_size, bias=False)
 
-    def forward(self, images, labels):
+    def forward(self, images):
         if self.detector is None:
             gri_feat, gri_mask = images['grid'], images['mask']
             gri_feat = self.embed_image(gri_feat)
@@ -51,25 +50,26 @@ class Transformer(nn.Module):
         for l in self.encoder_img:
             enc_img = l(enc_img, enc_img, enc_img, enc_mask)
         
-        # enc_txt = self.img2txt(enc_img)
-        # vocab = self.word_emb.weight
-        # enc_txt = torch.softmax(enc_txt @ vocab.t(), -1) @ vocab
-        # for l in self.encoder_txt:
-        #     enc_txt = l(enc_txt, enc_txt, enc_txt)
+        enc_txt = enc_img
+        for l in self.encoder_txt:
+            enc_txt = l(enc_txt, enc_txt, enc_txt)
         
-        # enc_txt_out = enc_txt[:, :20]
-        # enc_txt_out = self.fc(enc_txt_out)
+        enc_txt_out = enc_txt[:, 0]
+        txt_logit = self.fc_tag(enc_txt_out)
 
-        # _, en_ids = torch.max(enc_txt_out, dim=-1)
-        # pos_indx = torch.arange(1, en_ids.shape[-1] + 1, device='cuda').view(1, -1)
-        # out = self.pos_emb(pos_indx).repeat(en_ids.shape[0], 1, 1)
-        # out1 = self.word_emb(en_ids)
-        out = self.word_emb(labels)
+
+        with torch.no_grad():
+            offline_logit = F.sigmoid(txt_logit.detach())
+            prob, pred_topk = offline_logit.topk(20, dim=1, largest=True)
+
+        out1 = self.word_emb(pred_topk)
+        pos_indx = torch.arange(1, enc_img.shape[1] + 1, device='cuda').view(1, -1)
+        out = self.pos_emb(pos_indx).repeat(out1.shape[0], 1, 1)
         for l in self.decoder:
-            out = l(out, out, enc_img, enc_mask)
-        out = self.fc(out)
+            out = l(out, out1, enc_img, enc_mask)
+        out = self.fc_word(out)
         
-        return None, F.log_softmax(out, dim=-1)
+        return txt_logit, F.log_softmax(out, dim=-1)
 
     def entropy(self, out):
         logit = torch.softmax(self.fc(out), -1)

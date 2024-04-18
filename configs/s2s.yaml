@@ -1,12 +1,12 @@
-exp_name: '0415'
+exp_name: '0418'
 mode: 's2s'
 resume_last: false
 resume_best: false
 logs_folder: './ckpts/logs/'
 
 optimizer:
-  batch_size: 64
-  num_workers: 8
+  batch_size: 32
+  num_workers: 4
 
 dataset:
   root_path: '../mscoco'
