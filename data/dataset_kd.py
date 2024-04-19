@@ -106,7 +106,7 @@ class PairedDataset:
         token_gt = self.examples[index]['token_gt']
 
         max_len = max( max([len(x) for x in token_gt]), len(token_kd) )
-        label = np.ones((self.vocab_size), dtype=np.float32)
+        label = np.zeros((self.vocab_size), dtype=np.float32)
         for i in range(max_len):
             for j in range(len(token_gt)):
                 if i >= len(token_gt[j]):

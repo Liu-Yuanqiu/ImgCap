@@ -32,7 +32,7 @@ class Transformer(nn.Module):
                                                 for _ in range(N_de)])    
         
         self.word_emb = nn.Embedding(vocab_size, d_model, padding_idx=padding_idx)
-        self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
+        # self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
         self.fc_tag = nn.Linear(d_model, vocab_size, bias=False)
         self.fc_word = nn.Linear(d_model, vocab_size, bias=False)
 
@@ -63,8 +63,9 @@ class Transformer(nn.Module):
             prob, pred_topk = offline_logit.topk(20, dim=1, largest=True)
 
         out1 = self.word_emb(pred_topk)
-        pos_indx = torch.arange(1, enc_img.shape[1] + 1, device='cuda').view(1, -1)
-        out = self.pos_emb(pos_indx).repeat(out1.shape[0], 1, 1)
+        # pos_indx = torch.arange(1, 54+ 1, device='cuda').view(1, -1)
+        # out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
+        out = out1
         for l in self.decoder:
             out = l(out, out1, enc_img, enc_mask)
         out = self.fc_word(out)

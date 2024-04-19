@@ -1,4 +1,4 @@
-exp_name: '0418'
+exp_name: 'top20input'
 mode: 's2s'
 resume_last: false
 resume_best: false
