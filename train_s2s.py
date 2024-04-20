@@ -43,7 +43,7 @@ def evaluate_loss(model, dataloader, w):
                 samples['mask'] = samples['mask'].to(device)
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
-                txt_logit, logit = model(samples)
+                txt_logit, logit = model(samples, labels)
 
                 # optim.zero_grad()
                 # XE
@@ -53,16 +53,16 @@ def evaluate_loss(model, dataloader, w):
                 loss_ce = loss_fn_ce(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
 
                 # ML
-                loss_ml = loss_fn_fl(txt_logit, labels)
-                loss_ml = loss_ml.mean()
+                # loss_ml = loss_fn_fl(txt_logit, labels)
+                # loss_ml = loss_ml.mean()
 
-                loss = loss_ce + loss_ml
+                loss = loss_ce # + loss_ml
                 # loss.backward()
 
                 this_loss = loss.item()
                 running_loss += this_loss
 
-                pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss_ml=loss_ml.item())
+                pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item()) #, loss_ml=loss_ml.item())
                 pbar.update()
 
                 if test:
@@ -83,7 +83,7 @@ def evaluate_metrics(model, dataloader, text_field):
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             with torch.no_grad():
-                _, logit = model(samples)
+                _, logit = model(samples, labels)
             
             _, out = torch.max(logit, -1)
             caps_gen = text_field.decode(out, join_words=False, deduplication=True)
@@ -109,7 +109,7 @@ def train_xe(model, dataloader, optim, text_field, w):
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             tokens_kd = tokens_kd.to(device)
-            txt_logit, logit = model(samples)
+            txt_logit, logit = model(samples, labels)
             
             optim.zero_grad()
             # XE
@@ -119,17 +119,17 @@ def train_xe(model, dataloader, optim, text_field, w):
             loss_ce = loss_fn_ce(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
 
             # focal loss
-            loss_ml = loss_fn_fl(txt_logit, labels)
-            loss_ml = loss_ml.mean()
+            # loss_ml = loss_fn_fl(txt_logit, labels)
+            # loss_ml = loss_ml.mean()
 
-            loss = loss_ce + loss_ml
+            loss = loss_ce # + loss_ml
             loss.backward()
 
             optim.step()
             this_loss = loss.item()
             running_loss += this_loss
 
-            pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss_ml=loss_ml.item())
+            pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item()) #, loss_ml=loss_ml.item())
             pbar.update()
 
             if test:
