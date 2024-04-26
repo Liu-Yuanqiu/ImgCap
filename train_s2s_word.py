@@ -91,10 +91,10 @@ def evaluate_metrics(model, dataloader):
             fn += fn_now
 
             pbar.update()
-    acc_avg = tp / (tp + fn)
-    rec_avg = tp / (tp + fp)
-    print('All Accuracy: %f, Recall: %f, F1: %f' % (acc_avg, rec_avg, 2*acc_avg*rec_avg/(acc_avg+rec_avg) ))
-    return acc_avg, rec_avg, 2*acc_avg*rec_avg/(acc_avg+rec_avg)
+    pre_avg = tp / (tp + fp)
+    rec_avg = tp / (tp + fn)
+    print('All Precision: %f, Recall: %f, F1: %f' % (pre_avg, rec_avg, 2*pre_avg*rec_avg/(pre_avg+rec_avg) ))
+    return pre_avg, rec_avg, 2*pre_avg*rec_avg/(pre_avg+rec_avg)
 
 def train_xe(model, dataloader, optim):
     # Training with cross-entropy
@@ -150,9 +150,9 @@ if __name__ == '__main__':
         base_lr = 0.0001
         if s <= 2:
             lr = base_lr * (s+1) / 4
-        elif s <= 10:
+        elif s <= 7:
             lr = base_lr
-        elif s <= 20:
+        elif s <= 10:
             lr = base_lr * 0.2
         else:
             lr = base_lr * 0.2 * 0.2
@@ -203,13 +203,13 @@ if __name__ == '__main__':
 
         # Validation scores
         acc_avg, rec_avg, f1 = evaluate_metrics(model, dataloaders['valid'])
-        writer.add_scalar('data/acc_avg', acc_avg, e)
+        writer.add_scalar('data/pre_avg', acc_avg, e)
         writer.add_scalar('data/rec_avg', rec_avg, e)
         writer.add_scalar('data/f1', f1, e)
 
         # Test scores
         acc_avg, rec_avg, f1 = evaluate_metrics(model, dataloaders['test'])
-        writer.add_scalar('data/acc_avg', acc_avg, e)
+        writer.add_scalar('data/pre_avg', acc_avg, e)
         writer.add_scalar('data/rec_avg', rec_avg, e)
         writer.add_scalar('data/f1', f1, e)
 
