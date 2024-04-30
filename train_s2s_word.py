@@ -78,7 +78,12 @@ def evaluate_metrics(model, dataloader):
             with torch.no_grad():
                 out = model(samples)
             
-            out = torch.where(out > 0, torch.ones_like(out), torch.zeros_like(out))
+            out = out.sigmoid()
+            out = torch.where(out > 0.5, torch.ones_like(out), torch.zeros_like(out))
+            # _, pred_ids = torch.topk(out, 20, dim=-1)
+            # pred = torch.zeros_like(out)
+            # pred1 = torch.ones_like(out)
+            # pred.scatter_(1, pred_ids, pred1)
 
             tptn = (out == labels).float().sum()
             tp_now = (out * labels).sum()
@@ -186,10 +191,10 @@ if __name__ == '__main__':
             scheduler.load_state_dict(data['scheduler'])
             scheduler.step()
             start_epoch = data['epoch'] + 1
-            best_cider = data['best_cider']
+            # best_cider = data['best_cider']
             patience = data['patience']
-            print('Resuming from epoch %d, validation loss %f, and best cider %f' % (
-                data['epoch'], data['val_loss'], data['best_cider']))
+            print('Resuming from epoch %d, validation loss %f' % (
+                data['epoch'], data['val_loss']))
             print('patience:', data['patience'])
 
     print("Training starts")
