@@ -18,6 +18,8 @@ class Transformer(nn.Module):
                                                        attention_module=attention_module, 
                                                        attention_module_kwargs=attention_module_kwargs) 
                                                        for _ in range(N_en)])
+        self.dense = nn.Linear(512, 512)
+        self.activation = nn.Tanh()
         self.fc_word = nn.Linear(d_model, vocab_size, bias=False)
 
         self.init_weights()
@@ -32,6 +34,8 @@ class Transformer(nn.Module):
             enc_txt = l(enc_txt, enc_txt, enc_txt, enc_mask)
         
         enc_txt_out = enc_txt[:, 0]
+        enc_txt_out = self.dense(enc_txt_out)
+        enc_txt_out = self.activation(enc_txt_out)
         enc_txt_out = self.fc_word(enc_txt_out)
         
         return enc_txt_out

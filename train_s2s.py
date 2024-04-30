@@ -4,6 +4,7 @@ from evaluation import Cider
 from data.dataset_kd import build_coco_dataloaders
 from models.detector import build_detector
 from models.s2s.transformer import Transformer
+from models.s2s.transformer_word import Transformer as Word
 from models.losses import MLCrossEntropy, FocalLossWithLogitsNegLoss
 from pycocotools.coco import COCO
 import torch
@@ -23,7 +24,7 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 test = False
@@ -31,38 +32,29 @@ random.seed(1234)
 torch.manual_seed(1234)
 np.random.seed(1234)
 
-def evaluate_loss(model, dataloader, w):
+def evaluate_loss(model, dataloader):
     # Validation loss
     model.eval()
     running_loss = .0
     with tqdm(desc='Epoch %d - validation' % e, unit='it', total=len(dataloader)) as pbar:
         with torch.no_grad():
             for it, batch in enumerate(dataloader):
-                image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
+                image_id, samples, tokens_kd = batch['image_id'], batch['samples'], batch['tokens_kd']
                 samples['grid'] = samples['grid'].to(device)
                 samples['mask'] = samples['mask'].to(device)
-                labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
-                txt_logit, logit = model(samples, labels)
-
-                # optim.zero_grad()
+                logit = model(samples)
                 # XE
                 seq_len = min(logit.shape[1], tokens_kd.shape[1])
                 out_ce = logit[:, :seq_len].contiguous()
                 tokens_kd = tokens_kd[:, :seq_len].contiguous()
                 loss_ce = loss_fn_ce(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
 
-                # ML
-                # loss_ml = loss_fn_fl(txt_logit, labels)
-                # loss_ml = loss_ml.mean()
-
-                loss = loss_ce # + loss_ml
-                # loss.backward()
-
+                loss = loss_ce
                 this_loss = loss.item()
                 running_loss += this_loss
 
-                pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item()) #, loss_ml=loss_ml.item())
+                pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item())
                 pbar.update()
 
                 if test:
@@ -78,12 +70,11 @@ def evaluate_metrics(model, dataloader, text_field):
     gts = {}
     with tqdm(desc='Epoch %d - evaluation' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
-            image_id, samples, caps_gt, labels = batch['image_id'], batch['samples'], batch['caps_gt'], batch['labels']
+            image_id, samples, caps_gt = batch['image_id'], batch['samples'], batch['caps_gt']
             samples['grid'] = samples['grid'].to(device)
             samples['mask'] = samples['mask'].to(device)
-            labels = labels.to(device)
             with torch.no_grad():
-                _, logit = model(samples, labels)
+                logit = model(samples)
             
             _, out = torch.max(logit, -1)
             caps_gen = text_field.decode(out, join_words=False, deduplication=True)
@@ -98,7 +89,7 @@ def evaluate_metrics(model, dataloader, text_field):
     scores, _ = evaluation.compute_scores(gts, gen)
     return scores
 
-def train_xe(model, dataloader, optim, text_field, w):
+def train_xe(model, dataloader, optim, text_field):
     # Training with cross-entropy
     model.train()
     running_loss = .0
@@ -109,7 +100,8 @@ def train_xe(model, dataloader, optim, text_field, w):
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             tokens_kd = tokens_kd.to(device)
-            txt_logit, logit = model(samples, labels)
+            gen_tag_ratio = torch.tensor(max(1, e/20)).cuda()
+            logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
             
             optim.zero_grad()
             # XE
@@ -118,18 +110,14 @@ def train_xe(model, dataloader, optim, text_field, w):
             tokens_kd = tokens_kd[:, :seq_len].contiguous()
             loss_ce = loss_fn_ce(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
 
-            # focal loss
-            # loss_ml = loss_fn_fl(txt_logit, labels)
-            # loss_ml = loss_ml.mean()
-
-            loss = loss_ce # + loss_ml
+            loss = loss_ce
             loss.backward()
 
             optim.step()
             this_loss = loss.item()
             running_loss += this_loss
 
-            pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item()) #, loss_ml=loss_ml.item())
+            pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item())
             pbar.update()
 
             if test:
@@ -280,16 +268,16 @@ if __name__ == '__main__':
     dataloaders, text_field = build_coco_dataloaders(args, device)
     cider_train = Cider()
 
-    if args.dataset.use_cache:
-        detector = None
-    else:
-        detector = build_detector(args)
-    
-    model = Transformer(len(text_field.vocab), text_field.vocab.stoi['<pad>']).to(device)
+    word_encoder = Word(len(text_field.vocab), text_field.vocab.stoi['<pad>']).to(device)
+    fname = os.path.join('./ckpts', 's2sw', '0425', 's2sw_best.pth')
+    if os.path.exists(fname):
+        data = torch.load(fname)
+        word_encoder.load_state_dict(data['state_dict'], strict=False)
+        print('Resumed word encoder')
+    for n, p in word_encoder.named_parameters():
+        p.requires_grad = False
 
-    for n, p in model.named_parameters():
-        if 'detector' in n:
-            p.requires_grad = False
+    model = Transformer(len(text_field.vocab), text_field.vocab.stoi['<pad>'], word_encoder=word_encoder).to(device)
 
     def lambda_lr(s):
         base_lr = 0.0001
@@ -309,7 +297,6 @@ if __name__ == '__main__':
     scheduler = LambdaLR(optim, lambda_lr)
     
     loss_fn_ce = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
-    loss_fn_fl = FocalLossWithLogitsNegLoss()
     best_cider = .0
     patience = 0
     start_epoch = 0
@@ -335,15 +322,13 @@ if __name__ == '__main__':
             start_epoch = data['epoch'] + 1
             best_cider = data['best_cider']
             patience = data['patience']
-            print('Resuming from epoch %d, validation loss %f, and best cider %f' % (
-                data['epoch'], data['val_loss'], data['best_cider']))
-            print('patience:', data['patience'])
+            print('Resuming from epoch %d, patience %d, validation loss %f, and best cider %f' % (
+                data['epoch'], data['patience'], data['val_loss'], data['best_cider']))
 
     print("Training starts")
     for e in range(start_epoch, start_epoch + 100):
-        w = e+1
         if not use_rl:
-            train_loss = train_xe(model, dataloaders['train'], optim, text_field, w)
+            train_loss = train_xe(model, dataloaders['train'], optim, text_field)
             writer.add_scalar('data/train_loss', train_loss, e)
         else:
             train_loss, reward, reward_baseline = train_scst(model, dataloaders['train'], optim, cider_train, text_field)
@@ -353,7 +338,7 @@ if __name__ == '__main__':
 
         if not use_rl:
             # Validation loss
-            val_loss = evaluate_loss(model, dataloaders['valid'], w)
+            val_loss = evaluate_loss(model, dataloaders['valid'])
             writer.add_scalar('data/val_loss', val_loss, e)
         else:
             val_loss = 0.0

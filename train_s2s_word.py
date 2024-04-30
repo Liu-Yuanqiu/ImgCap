@@ -5,6 +5,7 @@ from data.dataset_kd import build_coco_dataloaders
 from models.detector import build_detector
 from models.s2s.transformer_word import Transformer
 from models.losses import FocalLossWithLogitsNegLoss
+from models.metric import MultiLabelAccuracy, mAPMeter
 from pycocotools.coco import COCO
 import torch
 from torch.optim import Adam
@@ -65,6 +66,8 @@ def evaluate_loss(model, dataloader):
 def evaluate_metrics(model, dataloader):
     import itertools
     model.eval()
+    acc = MultiLabelAccuracy()
+    map = mAPMeter()
     tp = 0
     tn = 0
     fp = 0
@@ -78,7 +81,9 @@ def evaluate_metrics(model, dataloader):
             with torch.no_grad():
                 out = model(samples)
             
+            acc.calc(out, labels)
             out = out.sigmoid()
+            map.add(output=out, target=labels)
             out = torch.where(out > 0.5, torch.ones_like(out), torch.zeros_like(out))
             # _, pred_ids = torch.topk(out, 20, dim=-1)
             # pred = torch.zeros_like(out)
@@ -99,7 +104,9 @@ def evaluate_metrics(model, dataloader):
     pre_avg = tp / (tp + fp)
     rec_avg = tp / (tp + fn)
     print('All Precision: %f, Recall: %f, F1: %f' % (pre_avg, rec_avg, 2*pre_avg*rec_avg/(pre_avg+rec_avg) ))
-    return pre_avg, rec_avg, 2*pre_avg*rec_avg/(pre_avg+rec_avg)
+    print('Tag Precision. = {}'.format(acc.prec()))
+    print('Tag mAP: {}'.format(map.value()))
+    return pre_avg, rec_avg, 2*pre_avg*rec_avg/(pre_avg+rec_avg), acc.prec(), map.value()
 
 def train_xe(model, dataloader, optim):
     # Training with cross-entropy
@@ -155,9 +162,9 @@ if __name__ == '__main__':
         base_lr = 0.0001
         if s <= 2:
             lr = base_lr * (s+1) / 4
-        elif s <= 7:
+        elif s <= 15:
             lr = base_lr
-        elif s <= 10:
+        elif s <= 30:
             lr = base_lr * 0.2
         else:
             lr = base_lr * 0.2 * 0.2
@@ -207,28 +214,30 @@ if __name__ == '__main__':
         writer.add_scalar('data/val_loss', val_loss, e)
 
         # Validation scores
-        acc_avg, rec_avg, f1 = evaluate_metrics(model, dataloaders['valid'])
+        acc_avg, rec_avg, f1, acc, map = evaluate_metrics(model, dataloaders['valid'])
         writer.add_scalar('data/pre_avg', acc_avg, e)
         writer.add_scalar('data/rec_avg', rec_avg, e)
         writer.add_scalar('data/f1', f1, e)
 
         # Test scores
-        acc_avg, rec_avg, f1 = evaluate_metrics(model, dataloaders['test'])
+        acc_avg, rec_avg, f1, acc, map = evaluate_metrics(model, dataloaders['test'])
         writer.add_scalar('data/pre_avg', acc_avg, e)
         writer.add_scalar('data/rec_avg', rec_avg, e)
         writer.add_scalar('data/f1', f1, e)
+        writer.add_scalar('data/acc', acc, e)
+        writer.add_scalar('data/map', map, e)
 
         # Prepare for next epoch
         best = False
-        if acc_avg >= best_acc:
-            best_acc = acc_avg
+        if acc >= best_acc:
+            best_acc = acc
             patience = 0
             best = True
         else:
             patience += 1
 
         exit_train = False
-        if patience == 5:
+        if patience == 10:
             print('patience reached.')
             exit_train = True
 

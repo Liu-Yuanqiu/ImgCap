@@ -6,9 +6,9 @@ from models.containers import ModuleList
 from models.attention import MultiHeadAttention, PositionWiseFeedForward, sinusoid_encoding_table
 
 class Transformer(nn.Module):
-    def __init__(self, vocab_size, padding_idx, detector=None, N_en=3, N_de=3, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, identity_map_reordering=False, attention_module=None, attention_module_kwargs=None):
+    def __init__(self, vocab_size, padding_idx, word_encoder=None, N_en=3, N_de=3, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, identity_map_reordering=False, attention_module=None, attention_module_kwargs=None):
         super(Transformer, self).__init__()
-        self.detector = detector
+        self.word_encoder = word_encoder
         self.embed_image = nn.Sequential( 
             nn.Linear(1024, 512), 
             nn.ReLU(), 
@@ -19,11 +19,6 @@ class Transformer(nn.Module):
                                                        attention_module=attention_module, 
                                                        attention_module_kwargs=attention_module_kwargs) 
                                                        for _ in range(N_en)])
-        # self.encoder_txt = nn.ModuleList([EncoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
-        #                                                identity_map_reordering=identity_map_reordering, 
-        #                                                attention_module=attention_module, 
-        #                                                attention_module_kwargs=attention_module_kwargs) 
-        #                                                for _ in range(N_en)])
         self.decoder = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
                                                 self_att_module=attention_module, 
                                                 enc_att_module=attention_module, 
@@ -33,45 +28,39 @@ class Transformer(nn.Module):
         
         self.word_emb = nn.Embedding(vocab_size, d_model, padding_idx=padding_idx)
         self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
-        # self.fc_tag = nn.Linear(d_model, vocab_size, bias=False)
         self.fc_word = nn.Linear(d_model, vocab_size, bias=False)
 
-    def forward(self, images, labels):
-        if self.detector is None:
-            gri_feat, gri_mask = images['grid'], images['mask']
-            gri_feat = self.embed_image(gri_feat)
-        else:
-            outputs = self.detector(images)
-            gri_feat, gri_mask = outputs['gri_feat'], outputs['gri_mask']
-            gri_feat = self.embed_image(gri_feat)
-        enc_mask = gri_mask
+        self.topk = 20
+
+    def forward(self, images, labels=None, gen_tag_ratio=None):
+        gri_feat, gri_mask = images['grid'], images['mask']
+        gri_feat = self.embed_image(gri_feat)
 
         enc_img = gri_feat
         for l in self.encoder_img:
-            enc_img = l(enc_img, enc_img, enc_img, enc_mask)
-        
-        # enc_txt = enc_img
-        # for l in self.encoder_txt:
-        #     enc_txt = l(enc_txt, enc_txt, enc_txt)
-        
-        # enc_txt_out = enc_txt[:, 0]
-        # txt_logit = self.fc_tag(enc_txt_out)
+            enc_img = l(enc_img, enc_img, enc_img, gri_mask)
 
+        word_logit = self.word_encoder(images)
+        with torch.no_grad():
+            offline_logit = torch.nn.functional.sigmoid(word_logit.detach())
+            prob, pred_topk = offline_logit.topk(self.topk, dim=1, largest=True)
+        if gen_tag_ratio is not None:
+            # fuse the generated tags with GT tags at specific portion X%
+            for batch_idx, lab in enumerate(labels):
+                batch_tag = torch.nonzero(lab, as_tuple=False).squeeze(1)
+                batch_len = int((1 - gen_tag_ratio) * len(batch_tag))
+                indices = torch.randperm(batch_len)
+                batch_tag = batch_tag[indices]
+                pred_topk[batch_idx, :batch_len] = batch_tag
 
-        # with torch.no_grad():
-        #     offline_logit = F.sigmoid(txt_logit.detach())
-        #     prob, pred_topk = offline_logit.topk(20, dim=1, largest=True)
-
-        out1 = self.word_emb(labels)
+        out1 = self.word_emb(pred_topk)
         pos_indx = torch.arange(1, enc_img.shape[1] + 1, device='cuda').view(1, -1)
         out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
-        # out = out1
         for l in self.decoder:
-            out = l(out, out1, enc_img, enc_mask)
+            out = l(out, out1, enc_img, gri_mask)
         out = self.fc_word(out)
         
-        # return txt_logit, F.log_softmax(out, dim=-1)
-        return None, F.log_softmax(out, dim=-1)
+        return F.log_softmax(out, dim=-1)
 
     def entropy(self, out):
         logit = torch.softmax(self.fc(out), -1)

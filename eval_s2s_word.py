@@ -5,6 +5,7 @@ from data.dataset_kd import build_coco_dataloaders
 from models.detector import build_detector
 from models.s2s.transformer_word import Transformer
 from models.losses import FocalLossWithLogitsNegLoss
+from models.metric import MultiLabelAccuracy, mAPMeter
 from pycocotools.coco import COCO
 import torch
 from torch.optim import Adam
@@ -34,6 +35,8 @@ np.random.seed(1234)
 def evaluate_metrics(model, dataloader):
     import itertools
     model.eval()
+    acc = MultiLabelAccuracy()
+    map = mAPMeter()
     tp = 0
     tn = 0
     fp = 0
@@ -47,8 +50,10 @@ def evaluate_metrics(model, dataloader):
             with torch.no_grad():
                 out = model(samples)
             
+            acc.calc(out, labels)
             out = out.sigmoid()
-            out = torch.where(out > 0.4, torch.ones_like(out), torch.zeros_like(out))
+            map.add(output=out, target=labels)
+            out = torch.where(out > 0.5, torch.ones_like(out), torch.zeros_like(out))
             # _, pred_ids = torch.topk(out, 20, dim=-1)
             # pred = torch.zeros_like(out)
             # pred1 = torch.ones_like(out)
@@ -68,6 +73,8 @@ def evaluate_metrics(model, dataloader):
     pre_avg = tp / (tp + fp)
     rec_avg = tp / (tp + fn)
     print('All Precision: %f, Recall: %f, F1: %f' % (pre_avg, rec_avg, 2*pre_avg*rec_avg/(pre_avg+rec_avg) ))
+    print('Tag Precision. = {}'.format(acc.prec()))
+    print('Tag mAP: {}'.format(map.value()))
     return pre_avg, rec_avg, 2*pre_avg*rec_avg/(pre_avg+rec_avg)
 
 if __name__ == '__main__':
@@ -111,28 +118,13 @@ if __name__ == '__main__':
     start_epoch = 0
 
     args.model_path = os.path.join("./ckpts", args.mode, args.exp_name)
-    # if args.resume_last or args.resume_best:
-        # if args.resume_last:
-    fname = os.path.join(args.model_path, '%s_last.pth' % args.mode)
-        # else:
-            # fname = os.path.join(args.model_path, '%s_best.pth' % args.mode)
+    fname = os.path.join(args.model_path, '%s_best.pth' % args.mode)
 
     if os.path.exists(fname):
         data = torch.load(fname)
-        torch.set_rng_state(data['torch_rng_state'])
-        torch.cuda.set_rng_state(data['cuda_rng_state'])
-        np.random.set_state(data['numpy_rng_state'])
-        random.setstate(data['random_rng_state'])
         model.load_state_dict(data['state_dict'], strict=False)
-        optim.load_state_dict(data['optimizer'])
-        scheduler.load_state_dict(data['scheduler'])
-        scheduler.step()
-        start_epoch = data['epoch'] + 1
-        # best_cider = data['best_cider']
-        patience = data['patience']
         print('Resuming from epoch %d, validation loss %f' % (
                 data['epoch'], data['val_loss']))
-        print('patience:', data['patience'])
 
 
     # Validation scores
