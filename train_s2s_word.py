@@ -64,14 +64,9 @@ def evaluate_loss(model, dataloader):
     return val_loss
 
 def evaluate_metrics(model, dataloader):
-    import itertools
     model.eval()
-    acc = MultiLabelAccuracy()
-    map = mAPMeter()
-    tp = 0
-    tn = 0
-    fp = 0
-    fn = 0
+    running_acc = 0
+    acc = 0
     with tqdm(desc='Epoch %d - evaluation' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
             image_id, samples, labels = batch['image_id'], batch['samples'], batch['labels']
@@ -81,32 +76,19 @@ def evaluate_metrics(model, dataloader):
             with torch.no_grad():
                 out = model(samples)
             
-            acc.calc(out, labels)
             out = out.sigmoid()
-            map.add(output=out, target=labels)
-            out = torch.where(out > 0.5, torch.ones_like(out), torch.zeros_like(out))
-            # _, pred_ids = torch.topk(out, 20, dim=-1)
-            # pred = torch.zeros_like(out)
-            # pred1 = torch.ones_like(out)
-            # pred.scatter_(1, pred_ids, pred1)
+            topk_ids = out.topk(k=20, dim=1)[1]
+            res = torch.zeros_like(out)
+            for i in range(res.shape[0]):
+                res[i].scatter_(dim=0, index=topk_ids[i], src=torch.ones_like(res[i]))
+            this_acc = (res*labels).sum(dim=1) / res.sum(dim=1)
+            
+            running_acc += this_acc.mean().item()
+            acc = running_acc / (it+1)
 
-            tptn = (out == labels).float().sum()
-            tp_now = (out * labels).sum()
-            tn_now = tptn - tp_now
-            fn_now = ((out-labels) == 1).float().sum()
-            fp_now = ((labels-out) == 1).float().sum()
-            tp += tp_now
-            tn += tn_now
-            fp += fp_now
-            fn += fn_now
-
+            pbar.set_postfix(acc=acc)
             pbar.update()
-    pre_avg = tp / (tp + fp)
-    rec_avg = tp / (tp + fn)
-    print('All Precision: %f, Recall: %f, F1: %f' % (pre_avg, rec_avg, 2*pre_avg*rec_avg/(pre_avg+rec_avg) ))
-    print('Tag Precision. = {}'.format(acc.prec()))
-    print('Tag mAP: {}'.format(map.value()))
-    return pre_avg, rec_avg, 2*pre_avg*rec_avg/(pre_avg+rec_avg), acc.prec(), map.value()
+    return acc
 
 def train_xe(model, dataloader, optim):
     # Training with cross-entropy
@@ -214,18 +196,12 @@ if __name__ == '__main__':
         writer.add_scalar('data/val_loss', val_loss, e)
 
         # Validation scores
-        acc_avg, rec_avg, f1, acc, map = evaluate_metrics(model, dataloaders['valid'])
-        writer.add_scalar('data/pre_avg', acc_avg, e)
-        writer.add_scalar('data/rec_avg', rec_avg, e)
-        writer.add_scalar('data/f1', f1, e)
+        acc = evaluate_metrics(model, dataloaders['valid'])
+        writer.add_scalar('data/acc', acc, e)
 
         # Test scores
-        acc_avg, rec_avg, f1, acc, map = evaluate_metrics(model, dataloaders['test'])
-        writer.add_scalar('data/pre_avg', acc_avg, e)
-        writer.add_scalar('data/rec_avg', rec_avg, e)
-        writer.add_scalar('data/f1', f1, e)
+        acc = evaluate_metrics(model, dataloaders['test'])
         writer.add_scalar('data/acc', acc, e)
-        writer.add_scalar('data/map', map, e)
 
         # Prepare for next epoch
         best = False
