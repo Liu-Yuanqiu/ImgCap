@@ -111,7 +111,7 @@ if __name__ == '__main__':
 
 
     # Validation scores
-    acc_avg, rec_avg, f1 = evaluate_metrics(model, dataloaders['valid'])
+    acc = evaluate_metrics(model, dataloaders['valid'])
 
     # Test scores
-    acc_avg, rec_avg, f1 = evaluate_metrics(model, dataloaders['test'])
+    acc = evaluate_metrics(model, dataloaders['test'])

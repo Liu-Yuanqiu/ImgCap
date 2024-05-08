@@ -44,11 +44,11 @@ class Transformer(nn.Module):
         with torch.no_grad():
             offline_logit = torch.nn.functional.sigmoid(word_logit.detach())
             prob, pred_topk = offline_logit.topk(self.topk, dim=1, largest=True)
-        if gen_tag_ratio is not None:
+        if labels is not None and gen_tag_ratio is not None:
             # fuse the generated tags with GT tags at specific portion X%
             for batch_idx, lab in enumerate(labels):
                 batch_tag = torch.nonzero(lab, as_tuple=False).squeeze(1)
-                batch_len = int((1 - gen_tag_ratio) * len(batch_tag))
+                batch_len = min(int((1 - gen_tag_ratio) * len(batch_tag)), self.topk)
                 indices = torch.randperm(batch_len)
                 batch_tag = batch_tag[indices]
                 pred_topk[batch_idx, :batch_len] = batch_tag

@@ -94,13 +94,15 @@ def train_xe(model, dataloader, optim, text_field):
     model.train()
     running_loss = .0
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
+        gen_tag_ratio = torch.tensor(min(1, e/10)).cuda()
+        print("Epoch: %d, Gen Tag Ratio: %f" % (e, gen_tag_ratio.item()))
+        
         for it, batch in enumerate(dataloader):
             image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
             samples['grid'] = samples['grid'].to(device)
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             tokens_kd = tokens_kd.to(device)
-            gen_tag_ratio = torch.tensor(max(1, e/20)).cuda()
             logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
             
             optim.zero_grad()
