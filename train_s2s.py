@@ -5,11 +5,11 @@ from data.dataset_kd import build_coco_dataloaders
 from models.detector import build_detector
 from models.s2s.transformer import Transformer
 from models.s2s.transformer_word import Transformer as Word
-from models.losses import MLCrossEntropy, FocalLossWithLogitsNegLoss
+from models.losses import MLCrossEntropy, FocalLossWithLogitsNegLoss, ExponentialLR
 from pycocotools.coco import COCO
 import torch
 from torch.optim import Adam
-from torch.optim.lr_scheduler import LambdaLR
+from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
 from torch.nn import NLLLoss
 from torch.nn import functional as F
 import warnings
@@ -94,9 +94,14 @@ def train_xe(model, dataloader, optim, text_field):
     model.train()
     running_loss = .0
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
-        gen_tag_ratio = torch.tensor(min(1, e/10)).cuda()
+        if e<10:
+            gen_tag_ratio = torch.tensor(0).cuda()
+        elif e<20:
+            gen_tag_ratio = torch.tensor(min(1, (e-9)/10)).cuda()
+        else:
+            gen_tag_ratio = torch.tensor(1).cuda()
         print("Epoch: %d, Gen Tag Ratio: %f" % (e, gen_tag_ratio.item()))
-        
+
         for it, batch in enumerate(dataloader):
             image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
             samples['grid'] = samples['grid'].to(device)
@@ -271,7 +276,7 @@ if __name__ == '__main__':
     cider_train = Cider()
 
     word_encoder = Word(len(text_field.vocab), text_field.vocab.stoi['<pad>']).to(device)
-    fname = os.path.join('./ckpts', 's2sw', '0425', 's2sw_best.pth')
+    fname = os.path.join('./ckpts', 's2sw', 'weighted_focal_loss', 's2sw_best.pth')
     if os.path.exists(fname):
         data = torch.load(fname)
         word_encoder.load_state_dict(data['state_dict'], strict=False)
@@ -295,9 +300,11 @@ if __name__ == '__main__':
         return lr
 
     # Initial conditions
-    optim = Adam(model.parameters(), lr=1, betas=(0.9, 0.98))
-    scheduler = LambdaLR(optim, lambda_lr)
-    
+    optim = Adam(model.parameters(), lr=args.optimizer.lr, betas=(0.9, 0.98))
+    # scheduler = LambdaLR(optim, lambda_lr)
+    # scheduler = CosineAnnealingLR(optim, T_max=args.optimizer.t_max, eta_min=args.optimizer.min_lr)
+    scheduler = ExponentialLR(optimizer=optim, gamma=args.optimizer.gamma)
+
     loss_fn_ce = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
     best_cider = .0
     patience = 0

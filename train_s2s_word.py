@@ -9,7 +9,7 @@ from models.metric import MultiLabelAccuracy, mAPMeter
 from pycocotools.coco import COCO
 import torch
 from torch.optim import Adam
-from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
+from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR, ExponentialLR
 from torch.nn import NLLLoss, MSELoss
 from torch.nn import functional as F
 import warnings
@@ -97,6 +97,7 @@ def train_xe(model, dataloader, optim):
     running_loss = .0
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
+            
             image_id, samples, labels = batch['image_id'], batch['samples'], batch['labels']
             samples['grid'] = samples['grid'].to(device)
             samples['mask'] = samples['mask'].to(device)
@@ -111,7 +112,7 @@ def train_xe(model, dataloader, optim):
             loss.backward()
 
             optim.step()
-            scheduler.step()
+            
             this_loss = loss.item()
             running_loss += this_loss
 
@@ -119,6 +120,8 @@ def train_xe(model, dataloader, optim):
             pbar.update()
 
             if test:
+                if it%100==0:
+                    print("Epoch: %d, it: %d, Learning Rate: %f" % (e, it, optim.param_groups[0]['lr']))
                 break
     
     loss = running_loss / len(dataloader)
@@ -158,7 +161,8 @@ if __name__ == '__main__':
     # Initial conditions
     optim = Adam(model.parameters(), lr=args.optimizer.lr, betas=(0.9, 0.98))
     # scheduler = LambdaLR(optim, lambda_lr)
-    scheduler = CosineAnnealingLR(optim, T_max=args.optimizer.t_max, eta_min=args.optimizer.min_lr)
+    # scheduler = CosineAnnealingLR(optim, T_max=args.optimizer.t_max, eta_min=args.optimizer.min_lr)
+    scheduler = ExponentialLR(optimizer=optim, gamma=args.optimizer.gamma)
     
     loss_fn0 = WeightedFocalLossWithLogitsNegLoss()
     # loss_fn1 = MSELoss()
@@ -245,4 +249,4 @@ if __name__ == '__main__':
             writer.close()
             break
         
-        
+        scheduler.step()
