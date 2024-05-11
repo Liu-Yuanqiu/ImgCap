@@ -4,13 +4,13 @@ from evaluation import Cider
 from data.dataset_kd import build_coco_dataloaders
 from models.detector import build_detector
 from models.s2s.transformer_word import Transformer
-from models.losses import FocalLossWithLogitsNegLoss
+from models.losses import FocalLossWithLogitsNegLoss, WeightedFocalLossWithLogitsNegLoss
 from models.metric import MultiLabelAccuracy, mAPMeter
 from pycocotools.coco import COCO
 import torch
 from torch.optim import Adam
-from torch.optim.lr_scheduler import LambdaLR
-from torch.nn import NLLLoss
+from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
+from torch.nn import NLLLoss, MSELoss
 from torch.nn import functional as F
 import warnings
 warnings.filterwarnings("ignore")
@@ -46,15 +46,15 @@ def evaluate_loss(model, dataloader):
                 labels = labels.to(device)
                 en_out = model(samples)
 
-                loss_ml = loss_fn(en_out, labels)
-                loss_ml = loss_ml.mean()
-                loss = loss_ml
+                loss_fl = loss_fn0(en_out, labels)
+                loss_fl = loss_fl.mean()
+                loss =  loss_fl
                 # loss.backward()
 
                 this_loss = loss.item()
                 running_loss += this_loss
 
-                pbar.set_postfix(loss=running_loss / (it + 1), loss_ml=loss_ml.item())
+                pbar.set_postfix(loss=running_loss / (it + 1), loss_fl=loss_fl.item())
                 pbar.update()
 
                 if test:
@@ -81,7 +81,8 @@ def evaluate_metrics(model, dataloader):
             res = torch.zeros_like(out)
             for i in range(res.shape[0]):
                 res[i].scatter_(dim=0, index=topk_ids[i], src=torch.ones_like(res[i]))
-            this_acc = (res*labels).sum(dim=1) / res.sum(dim=1)
+            target = (labels>0).float()
+            this_acc = (res*target).sum(dim=1) / res.sum(dim=1)
             
             running_acc += this_acc.mean().item()
             acc = running_acc / (it+1)
@@ -104,16 +105,17 @@ def train_xe(model, dataloader, optim):
             
             optim.zero_grad()
 
-            loss_ml = loss_fn(en_out, labels)
-            loss_ml = loss_ml.mean()
-            loss =  loss_ml
+            loss_fl = loss_fn0(en_out, labels)
+            loss_fl = loss_fl.mean()
+            loss =  loss_fl
             loss.backward()
 
             optim.step()
+            scheduler.step()
             this_loss = loss.item()
             running_loss += this_loss
 
-            pbar.set_postfix(loss=running_loss / (it + 1), loss_ml=loss_ml.item())
+            pbar.set_postfix(loss=running_loss / (it + 1), loss_fl=loss_fl.item())
             pbar.update()
 
             if test:
@@ -154,10 +156,12 @@ if __name__ == '__main__':
         return lr
 
     # Initial conditions
-    optim = Adam(model.parameters(), lr=1, betas=(0.9, 0.98))
-    scheduler = LambdaLR(optim, lambda_lr)
+    optim = Adam(model.parameters(), lr=args.optimizer.lr, betas=(0.9, 0.98))
+    # scheduler = LambdaLR(optim, lambda_lr)
+    scheduler = CosineAnnealingLR(optim, T_max=args.optimizer.t_max, eta_min=args.optimizer.min_lr)
     
-    loss_fn = FocalLossWithLogitsNegLoss()
+    loss_fn0 = WeightedFocalLossWithLogitsNegLoss()
+    # loss_fn1 = MSELoss()
     best_acc = 0.0
     patience = 0
     start_epoch = 0
@@ -178,7 +182,7 @@ if __name__ == '__main__':
             model.load_state_dict(data['state_dict'], strict=False)
             optim.load_state_dict(data['optimizer'])
             scheduler.load_state_dict(data['scheduler'])
-            scheduler.step()
+            # scheduler.step()
             start_epoch = data['epoch'] + 1
             # best_cider = data['best_cider']
             patience = data['patience']
@@ -188,6 +192,7 @@ if __name__ == '__main__':
 
     print("Training starts")
     for e in range(start_epoch, start_epoch + 100):
+        print("Epoch: %d, Learning Rate: %f" % (e, optim.param_groups[0]['lr']))
         train_loss = train_xe(model, dataloaders['train'], optim)
         writer.add_scalar('data/train_loss', train_loss, e)
 
@@ -197,11 +202,11 @@ if __name__ == '__main__':
 
         # Validation scores
         acc = evaluate_metrics(model, dataloaders['valid'])
-        writer.add_scalar('data/acc', acc, e)
+        writer.add_scalar('data/val_acc', acc, e)
 
         # Test scores
         acc = evaluate_metrics(model, dataloaders['test'])
-        writer.add_scalar('data/acc', acc, e)
+        writer.add_scalar('data/test_acc', acc, e)
 
         # Prepare for next epoch
         best = False
@@ -240,4 +245,4 @@ if __name__ == '__main__':
             writer.close()
             break
         
-        scheduler.step()
+        

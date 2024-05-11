@@ -128,7 +128,7 @@ class PairedDataset:
                 else:
                     wid = token_gt[j][i]
                     if wid not in [0, 1, 2, 3]:
-                        label[wid] = 1
+                        label[wid] += 1
                     else:
                         pass
 

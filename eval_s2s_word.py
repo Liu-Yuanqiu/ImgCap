@@ -32,12 +32,12 @@ random.seed(1234)
 torch.manual_seed(1234)
 np.random.seed(1234)
 
-def evaluate_metrics(model, dataloader):
+def evaluate_metrics(model, dataloader, topk):
     import itertools
     model.eval()
     running_acc = 0
     acc = 0
-    with tqdm(desc='Evaluation', unit='it', total=len(dataloader)) as pbar:
+    with tqdm(desc='Evaluation - %d' % topk, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
             image_id, samples, labels = batch['image_id'], batch['samples'], batch['labels']
             samples['grid'] = samples['grid'].to(device)
@@ -47,11 +47,12 @@ def evaluate_metrics(model, dataloader):
                 out = model(samples)
             
             out = out.sigmoid()
-            topk_ids = out.topk(k=20, dim=1)[1]
+            topk_ids = out.topk(k=topk, dim=1)[1]
             res = torch.zeros_like(out)
             for i in range(res.shape[0]):
                 res[i].scatter_(dim=0, index=topk_ids[i], src=torch.ones_like(res[i]))
-            this_acc = (res*labels).sum(dim=1) / res.sum(dim=1)
+            target = (labels>0).float()
+            this_acc = (res*target).sum(dim=1) / res.sum(dim=1)
             
             running_acc += this_acc.mean().item()
             acc = running_acc / (it+1)
@@ -109,9 +110,8 @@ if __name__ == '__main__':
         print('Resuming from epoch %d, validation loss %f' % (
                 data['epoch'], data['val_loss']))
 
-
-    # Validation scores
-    acc = evaluate_metrics(model, dataloaders['valid'])
-
-    # Test scores
-    acc = evaluate_metrics(model, dataloaders['test'])
+    for topk in [5, 10, 20]:
+        # Validation scores
+        acc = evaluate_metrics(model, dataloaders['valid'], topk)
+        # Test scores
+        acc = evaluate_metrics(model, dataloaders['test'], topk)
