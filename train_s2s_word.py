@@ -9,7 +9,7 @@ from models.metric import MultiLabelAccuracy, mAPMeter
 from pycocotools.coco import COCO
 import torch
 from torch.optim import Adam
-from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR, ExponentialLR
+from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR, ExponentialLR, ReduceLROnPlateau
 from torch.nn import NLLLoss, MSELoss
 from torch.nn import functional as F
 import warnings
@@ -24,7 +24,7 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 test = False
@@ -128,10 +128,11 @@ def train_xe(model, dataloader, optim):
     return loss
 
 if __name__ == '__main__':
-    multiprocessing.set_start_method('spawn')
-    device = torch.device('cuda')
     args = OmegaConf.load('configs/s2s_word.yaml')
     print(args)
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.rank
+    device = torch.device('cuda')
+    multiprocessing.set_start_method('spawn')
 
     writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.mode, args.exp_name))
 
@@ -162,7 +163,8 @@ if __name__ == '__main__':
     optim = Adam(model.parameters(), lr=args.optimizer.lr, betas=(0.9, 0.98))
     # scheduler = LambdaLR(optim, lambda_lr)
     # scheduler = CosineAnnealingLR(optim, T_max=args.optimizer.t_max, eta_min=args.optimizer.min_lr)
-    scheduler = ExponentialLR(optimizer=optim, gamma=args.optimizer.gamma)
+    # scheduler = ExponentialLR(optimizer=optim, gamma=args.optimizer.gamma)
+    scheduler = ReduceLROnPlateau(optim, mode='max', factor=0.5, patience=3)
     
     loss_fn0 = WeightedFocalLossWithLogitsNegLoss()
     # loss_fn1 = MSELoss()
@@ -205,17 +207,17 @@ if __name__ == '__main__':
         writer.add_scalar('data/val_loss', val_loss, e)
 
         # Validation scores
-        acc = evaluate_metrics(model, dataloaders['valid'])
-        writer.add_scalar('data/val_acc', acc, e)
+        val_acc = evaluate_metrics(model, dataloaders['valid'])
+        writer.add_scalar('data/val_acc', val_acc, e)
 
         # Test scores
-        acc = evaluate_metrics(model, dataloaders['test'])
-        writer.add_scalar('data/test_acc', acc, e)
+        test_acc = evaluate_metrics(model, dataloaders['test'])
+        writer.add_scalar('data/test_acc', test_acc, e)
 
         # Prepare for next epoch
         best = False
-        if acc >= best_acc:
-            best_acc = acc
+        if test_acc >= best_acc:
+            best_acc = test_acc
             patience = 0
             best = True
         else:
@@ -249,4 +251,4 @@ if __name__ == '__main__':
             writer.close()
             break
         
-        scheduler.step()
+        scheduler.step(test_acc)

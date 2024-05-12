@@ -1,12 +1,13 @@
-exp_name: 'weighted_focal_loss_ExponentialLR2'
-mode: 's2sw'
+rank: "2"
+exp_name: 'weighted_focal_loss_alpha0.1_gamma2'
+mode: 's2s_word'
 resume_last: false
 resume_best: false
 logs_folder: './ckpts/logs/'
 
 optimizer:
   batch_size: 32
-  num_workers: 4
+  num_workers: 8
   lr: 0.0001
   min_lr: 1e-6
   t_max: 20

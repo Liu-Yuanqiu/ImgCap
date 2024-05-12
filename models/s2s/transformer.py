@@ -6,7 +6,7 @@ from models.containers import ModuleList
 from models.attention import MultiHeadAttention, PositionWiseFeedForward, sinusoid_encoding_table
 
 class Transformer(nn.Module):
-    def __init__(self, vocab_size, padding_idx, word_encoder=None, N_en=3, N_de=3, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, identity_map_reordering=False, attention_module=None, attention_module_kwargs=None):
+    def __init__(self, vocab_size, padding_idx, topk, word_encoder=None, N_en=3, N_de=3, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, identity_map_reordering=False, attention_module=None, attention_module_kwargs=None):
         super(Transformer, self).__init__()
         self.word_encoder = word_encoder
         self.embed_image = nn.Sequential( 
@@ -30,7 +30,7 @@ class Transformer(nn.Module):
         self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
         self.fc_word = nn.Linear(d_model, vocab_size, bias=False)
 
-        self.topk = 10
+        self.topk = topk
 
     def forward(self, images, labels=None, gen_tag_ratio=None):
         gri_feat, gri_mask = images['grid'], images['mask']

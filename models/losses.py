@@ -64,7 +64,7 @@ class FocalLossWithLogitsNegLoss(nn.Module):
         return -loss
     
 class WeightedFocalLossWithLogitsNegLoss(nn.Module):
-    def __init__(self, alpha=0.05, gammaT=2, gammaF=2):
+    def __init__(self, alpha=0.1, gammaT=2, gammaF=2):
         super().__init__()
         self.alpha = alpha
         self.gammaT = gammaT

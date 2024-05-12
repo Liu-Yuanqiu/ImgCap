@@ -9,7 +9,7 @@ from models.losses import MLCrossEntropy, FocalLossWithLogitsNegLoss
 from pycocotools.coco import COCO
 import torch
 from torch.optim import Adam
-from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR, ExponentialLR
+from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR, ExponentialLR, ReduceLROnPlateau
 from torch.nn import NLLLoss
 from torch.nn import functional as F
 import warnings
@@ -24,7 +24,7 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 test = False
@@ -39,11 +39,16 @@ def evaluate_loss(model, dataloader):
     with tqdm(desc='Epoch %d - validation' % e, unit='it', total=len(dataloader)) as pbar:
         with torch.no_grad():
             for it, batch in enumerate(dataloader):
-                image_id, samples, tokens_kd = batch['image_id'], batch['samples'], batch['tokens_kd']
+                image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
                 samples['grid'] = samples['grid'].to(device)
                 samples['mask'] = samples['mask'].to(device)
+                labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
-                logit = model(samples)
+                if args.gt_infer:
+                    gen_tag_ratio = torch.tensor(0).cuda()
+                    logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
+                else:
+                    logit = model(samples)
                 # XE
                 seq_len = min(logit.shape[1], tokens_kd.shape[1])
                 out_ce = logit[:, :seq_len].contiguous()
@@ -70,11 +75,16 @@ def evaluate_metrics(model, dataloader, text_field):
     gts = {}
     with tqdm(desc='Epoch %d - evaluation' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
-            image_id, samples, caps_gt = batch['image_id'], batch['samples'], batch['caps_gt']
+            image_id, samples, labels, caps_gt = batch['image_id'], batch['samples'], batch['labels'], batch['caps_gt']
             samples['grid'] = samples['grid'].to(device)
             samples['mask'] = samples['mask'].to(device)
+            labels = labels.to(device)
             with torch.no_grad():
-                logit = model(samples)
+                if args.gt_infer:
+                    gen_tag_ratio = torch.tensor(0).cuda()
+                    logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
+                else:
+                    logit = model(samples)
             
             _, out = torch.max(logit, -1)
             caps_gen = text_field.decode(out, join_words=False, deduplication=True)
@@ -101,6 +111,7 @@ def train_xe(model, dataloader, optim, text_field):
         # else:
         #     gen_tag_ratio = torch.tensor(1).cuda()
         # print("Epoch: %d, Gen Tag Ratio: %f" % (e, gen_tag_ratio.item()))
+        gen_tag_ratio = torch.tensor(0).cuda()
 
         for it, batch in enumerate(dataloader):
             image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
@@ -108,8 +119,8 @@ def train_xe(model, dataloader, optim, text_field):
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             tokens_kd = tokens_kd.to(device)
-            logit = model(samples)
-            # logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
+            # logit = model(samples)
+            logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
             
             optim.zero_grad()
             # XE
@@ -266,10 +277,11 @@ def train_scst1(model, dataloader, optim, cider, text_field):
     return loss, reward, reward_baseline
 
 if __name__ == '__main__':
-    multiprocessing.set_start_method('spawn')
-    device = torch.device('cuda')
     args = OmegaConf.load('configs/s2s.yaml')
     print(args)
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.rank
+    device = torch.device('cuda')
+    multiprocessing.set_start_method('spawn')
 
     writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.mode, args.exp_name))
 
@@ -285,7 +297,7 @@ if __name__ == '__main__':
     for n, p in word_encoder.named_parameters():
         p.requires_grad = False
 
-    model = Transformer(len(text_field.vocab), text_field.vocab.stoi['<pad>'], word_encoder=word_encoder).to(device)
+    model = Transformer(len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.topk, word_encoder=word_encoder).to(device)
 
     def lambda_lr(s):
         base_lr = 0.0001
@@ -304,7 +316,8 @@ if __name__ == '__main__':
     optim = Adam(model.parameters(), lr=args.optimizer.lr, betas=(0.9, 0.98))
     # scheduler = LambdaLR(optim, lambda_lr)
     # scheduler = CosineAnnealingLR(optim, T_max=args.optimizer.t_max, eta_min=args.optimizer.min_lr)
-    scheduler = ExponentialLR(optimizer=optim, gamma=args.optimizer.gamma)
+    # scheduler = ExponentialLR(optimizer=optim, gamma=args.optimizer.gamma)
+    scheduler = ReduceLROnPlateau(optim, mode='max', factor=0.5, patience=3)
 
     loss_fn_ce = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
     best_cider = .0
@@ -337,6 +350,7 @@ if __name__ == '__main__':
 
     print("Training starts")
     for e in range(start_epoch, start_epoch + 100):
+        print("Epoch: %d, Learning Rate: %f" % (e, optim.param_groups[0]['lr']))
         if not use_rl:
             train_loss = train_xe(model, dataloaders['train'], optim, text_field)
             writer.add_scalar('data/train_loss', train_loss, e)
@@ -411,4 +425,4 @@ if __name__ == '__main__':
             writer.close()
             break
         
-        scheduler.step()
+        scheduler.step(test_cider)
