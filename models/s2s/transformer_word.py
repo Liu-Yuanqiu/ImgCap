@@ -34,8 +34,8 @@ class Transformer(nn.Module):
             enc_txt = l(enc_txt, enc_txt, enc_txt, enc_mask)
         
         enc_txt_out = enc_txt[:, 0]
-        enc_txt_out = self.dense(enc_txt_out)
-        enc_txt_out = self.activation(enc_txt_out)
+        # enc_txt_out = self.dense(enc_txt_out)
+        # enc_txt_out = self.activation(enc_txt_out)
         enc_txt_out = self.fc_word(enc_txt_out)
         
         return enc_txt_out

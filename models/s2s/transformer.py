@@ -30,7 +30,7 @@ class Transformer(nn.Module):
         self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
         self.fc_word = nn.Linear(d_model, vocab_size, bias=False)
 
-        self.topk = 20
+        self.topk = 10
 
     def forward(self, images, labels=None, gen_tag_ratio=None):
         gri_feat, gri_mask = images['grid'], images['mask']

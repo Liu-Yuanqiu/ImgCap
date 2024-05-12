@@ -5,11 +5,11 @@ from data.dataset_kd import build_coco_dataloaders
 from models.detector import build_detector
 from models.s2s.transformer import Transformer
 from models.s2s.transformer_word import Transformer as Word
-from models.losses import MLCrossEntropy, FocalLossWithLogitsNegLoss, ExponentialLR
+from models.losses import MLCrossEntropy, FocalLossWithLogitsNegLoss
 from pycocotools.coco import COCO
 import torch
 from torch.optim import Adam
-from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
+from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR, ExponentialLR
 from torch.nn import NLLLoss
 from torch.nn import functional as F
 import warnings
@@ -94,13 +94,13 @@ def train_xe(model, dataloader, optim, text_field):
     model.train()
     running_loss = .0
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
-        if e<10:
-            gen_tag_ratio = torch.tensor(0).cuda()
-        elif e<20:
-            gen_tag_ratio = torch.tensor(min(1, (e-9)/10)).cuda()
-        else:
-            gen_tag_ratio = torch.tensor(1).cuda()
-        print("Epoch: %d, Gen Tag Ratio: %f" % (e, gen_tag_ratio.item()))
+        # if e<20:
+        #     gen_tag_ratio = torch.tensor(0).cuda()
+        # elif e<30:
+        #     gen_tag_ratio = torch.tensor(min(1, (e-19)/10)).cuda()
+        # else:
+        #     gen_tag_ratio = torch.tensor(1).cuda()
+        # print("Epoch: %d, Gen Tag Ratio: %f" % (e, gen_tag_ratio.item()))
 
         for it, batch in enumerate(dataloader):
             image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
@@ -108,7 +108,8 @@ def train_xe(model, dataloader, optim, text_field):
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             tokens_kd = tokens_kd.to(device)
-            logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
+            logit = model(samples)
+            # logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
             
             optim.zero_grad()
             # XE

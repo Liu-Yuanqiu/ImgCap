@@ -35,6 +35,7 @@ np.random.seed(1234)
 def evaluate_metrics(model, dataloader, topk):
     import itertools
     model.eval()
+    running_len = 0
     running_acc = 0
     acc = 0
     with tqdm(desc='Evaluation - %d' % topk, unit='it', total=len(dataloader)) as pbar:
@@ -47,17 +48,25 @@ def evaluate_metrics(model, dataloader, topk):
                 out = model(samples)
             
             out = out.sigmoid()
-            topk_ids = out.topk(k=topk, dim=1)[1]
             res = torch.zeros_like(out)
-            for i in range(res.shape[0]):
-                res[i].scatter_(dim=0, index=topk_ids[i], src=torch.ones_like(res[i]))
-            target = (labels>0).float()
-            this_acc = (res*target).sum(dim=1) / res.sum(dim=1)
-            
-            running_acc += this_acc.mean().item()
-            acc = running_acc / (it+1)
+            if topk>0:
+                topk_ids = out.topk(k=topk, dim=1)[1]
+                for i in range(res.shape[0]):
+                    res[i].scatter_(dim=0, index=topk_ids[i], src=torch.ones_like(res[i]))
+            else:
+                outt = out.gt(0.4)
+                for i,t in enumerate(outt):
+                    topk_ids = torch.nonzero(t, as_tuple=False).squeeze(1)
+                    res[i].scatter_(dim=0, index=topk_ids, src=torch.ones_like(res[i]))
 
-            pbar.set_postfix(acc=acc)
+            target = (labels>0).float()
+            this_acc = (res*target).sum(dim=1) / (res.sum(dim=1) + 1e-10)
+            
+            running_len += res.sum(dim=1).mean().item()
+            running_acc += this_acc.mean().item()
+            # acc = running_acc / (it+1)
+
+            pbar.set_postfix(acc=running_acc / (it+1), len=running_len / (it+1))
             pbar.update()
     return acc
 
@@ -110,7 +119,7 @@ if __name__ == '__main__':
         print('Resuming from epoch %d, validation loss %f' % (
                 data['epoch'], data['val_loss']))
 
-    for topk in [5, 10, 20]:
+    for topk in [-1, 5, 10, 20]:
         # Validation scores
         acc = evaluate_metrics(model, dataloaders['valid'], topk)
         # Test scores

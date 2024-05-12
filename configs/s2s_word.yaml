@@ -1,4 +1,4 @@
-exp_name: 'weighted_focal_loss_ExponentialLR'
+exp_name: 'weighted_focal_loss_ExponentialLR2'
 mode: 's2sw'
 resume_last: false
 resume_best: false
