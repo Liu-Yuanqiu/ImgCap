@@ -24,10 +24,7 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-
-
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-test = False
 random.seed(1234)
 torch.manual_seed(1234)
 np.random.seed(1234)
@@ -44,16 +41,12 @@ def evaluate_loss(model, dataloader):
                 samples['mask'] = samples['mask'].to(device)
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
-                if args.gt_infer:
-                    gen_tag_ratio = torch.tensor(0).cuda()
-                    logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
-                else:
-                    logit = model(samples)
+                logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
                 # XE
                 seq_len = min(logit.shape[1], tokens_kd.shape[1])
                 out_ce = logit[:, :seq_len].contiguous()
                 tokens_kd = tokens_kd[:, :seq_len].contiguous()
-                loss_ce = loss_fn_ce(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+                loss_ce = loss_fn(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
 
                 loss = loss_ce
                 this_loss = loss.item()
@@ -62,7 +55,7 @@ def evaluate_loss(model, dataloader):
                 pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item())
                 pbar.update()
 
-                if test:
+                if args.test:
                     break
 
     val_loss = running_loss / len(dataloader)
@@ -80,11 +73,7 @@ def evaluate_metrics(model, dataloader, text_field):
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             with torch.no_grad():
-                if args.gt_infer:
-                    gen_tag_ratio = torch.tensor(0).cuda()
-                    logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
-                else:
-                    logit = model(samples)
+                logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
             
             _, out = torch.max(logit, -1)
             caps_gen = text_field.decode(out, join_words=False, deduplication=True)
@@ -104,22 +93,12 @@ def train_xe(model, dataloader, optim, text_field):
     model.train()
     running_loss = .0
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
-        # if e<20:
-        #     gen_tag_ratio = torch.tensor(0).cuda()
-        # elif e<30:
-        #     gen_tag_ratio = torch.tensor(min(1, (e-19)/10)).cuda()
-        # else:
-        #     gen_tag_ratio = torch.tensor(1).cuda()
-        # print("Epoch: %d, Gen Tag Ratio: %f" % (e, gen_tag_ratio.item()))
-        gen_tag_ratio = torch.tensor(0).cuda()
-
         for it, batch in enumerate(dataloader):
             image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
             samples['grid'] = samples['grid'].to(device)
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             tokens_kd = tokens_kd.to(device)
-            # logit = model(samples)
             logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
             
             optim.zero_grad()
@@ -127,7 +106,7 @@ def train_xe(model, dataloader, optim, text_field):
             seq_len = min(logit.shape[1], tokens_kd.shape[1])
             out_ce = logit[:, :seq_len].contiguous()
             tokens_kd = tokens_kd[:, :seq_len].contiguous()
-            loss_ce = loss_fn_ce(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+            loss_ce = loss_fn(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
 
             loss = loss_ce
             loss.backward()
@@ -139,7 +118,7 @@ def train_xe(model, dataloader, optim, text_field):
             pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item())
             pbar.update()
 
-            if test:
+            if args.test:
                 break
     
     loss = running_loss / len(dataloader)
@@ -283,54 +262,37 @@ if __name__ == '__main__':
     device = torch.device('cuda')
     multiprocessing.set_start_method('spawn')
 
-    writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.mode, args.exp_name))
+    writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.exp_mode, args.exp_name))
 
     dataloaders, text_field = build_coco_dataloaders(args, device)
     cider_train = Cider()
 
-    word_encoder = Word(len(text_field.vocab), text_field.vocab.stoi['<pad>']).to(device)
-    fname = os.path.join('./ckpts', 's2sw', 'weighted_focal_loss', 's2sw_best.pth')
-    if os.path.exists(fname):
-        data = torch.load(fname)
-        word_encoder.load_state_dict(data['state_dict'], strict=False)
-        print('Resumed word encoder')
-    for n, p in word_encoder.named_parameters():
-        p.requires_grad = False
+    model = Transformer(len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.topk).to(device)
 
-    model = Transformer(len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.topk, word_encoder=word_encoder).to(device)
-
-    def lambda_lr(s):
-        base_lr = 0.0001
-        if s <= 2:
-            lr = base_lr * (s+1) / 4
-        elif s <= 25:
-            lr = base_lr
-        elif s <= 30:
-            lr = base_lr * 0.2
-        else:
-            lr = base_lr * 0.2 * 0.2
-        print("Epoch: %d, Learning Rate: %f" % (s, lr))
-        return lr
+    if not args.gt_infer:
+        fname = os.path.join('./ckpts', 's2sw', 'weighted_focal_loss_alpha0.1_gamma2_wo_normalword', 's2sw_best.pth')
+        if os.path.exists(fname):
+            data = torch.load(fname)
+            model.load_state_dict(data['state_dict'], strict=False)
+            print('Resumed word encoder.')
 
     # Initial conditions
     optim = Adam(model.parameters(), lr=args.optimizer.lr, betas=(0.9, 0.98))
-    # scheduler = LambdaLR(optim, lambda_lr)
-    # scheduler = CosineAnnealingLR(optim, T_max=args.optimizer.t_max, eta_min=args.optimizer.min_lr)
-    # scheduler = ExponentialLR(optimizer=optim, gamma=args.optimizer.gamma)
-    scheduler = ReduceLROnPlateau(optim, mode='max', factor=0.5, patience=3)
+    scheduler = ReduceLROnPlateau(optim, mode='max', factor=args.optimizer.factor, patience=args.optimizer.patience)
 
-    loss_fn_ce = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
+    loss_fn = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
+
     best_cider = .0
     patience = 0
     start_epoch = 0
     use_rl = False
 
-    args.model_path = os.path.join("./ckpts", args.mode, args.exp_name)
+    args.model_path = os.path.join("./ckpts", args.exp_mode, args.exp_name)
     if args.resume_last or args.resume_best:
         if args.resume_last:
-            fname = os.path.join(args.model_path, '%s_last.pth' % args.mode)
+            fname = os.path.join(args.model_path, '%s_last.pth' % args.exp_mode)
         else:
-            fname = os.path.join(args.model_path, '%s_best.pth' % args.mode)
+            fname = os.path.join(args.model_path, '%s_best.pth' % args.exp_mode)
 
         if os.path.exists(fname):
             data = torch.load(fname)
@@ -352,6 +314,10 @@ if __name__ == '__main__':
     for e in range(start_epoch, start_epoch + 100):
         print("Epoch: %d, Learning Rate: %f" % (e, optim.param_groups[0]['lr']))
         if not use_rl:
+            gen_tag_ratio = torch.tensor(min(1, (e+1)/20)).cuda()
+            if args.gt_infer:
+                gen_tag_ratio = torch.tensor(0).cuda()
+            print("Epoch: %d, Gen Tag Ratio: %f" % (e, gen_tag_ratio.item()))
             train_loss = train_xe(model, dataloaders['train'], optim, text_field)
             writer.add_scalar('data/train_loss', train_loss, e)
         else:
@@ -417,10 +383,10 @@ if __name__ == '__main__':
             'scheduler': scheduler.state_dict(),
             'patience': patience,
             'best_cider': best_cider,
-        }, os.path.join(args.model_path, '%s_last.pth' % args.mode))
+        }, os.path.join(args.model_path, '%s_last.pth' % args.exp_mode))
 
         if best:
-            copyfile(os.path.join(args.model_path, '%s_last.pth' % args.mode), os.path.join(args.model_path, '%s_best.pth' % args.mode))
+            copyfile(os.path.join(args.model_path, '%s_last.pth' % args.exp_mode), os.path.join(args.model_path, '%s_best.pth' % args.exp_mode))
         if exit_train:
             writer.close()
             break

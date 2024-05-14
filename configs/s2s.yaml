@@ -1,20 +1,20 @@
-rank: "1"
-exp_name: 'pe_gt10'
-mode: 's2s'
+rank: "3"
+exp_name: 'pe_gt20'
+exp_mode: 's2s'
 resume_last: false
 resume_best: false
-logs_folder: './ckpts/logs/'
+logs_folder: './logs/'
+test: false
 
-topk: 10
+topk: 20
 gt_infer: true
 
 optimizer:
   batch_size: 32
-  num_workers: 8
+  num_workers: 4
   lr: 0.0001
-  min_lr: 1e-6
-  t_max: 20
-  gamma: 0.95
+  factor: 0.5
+  patience: 3
 
 dataset:
   root_path: '../mscoco'

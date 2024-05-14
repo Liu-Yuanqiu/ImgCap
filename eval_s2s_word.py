@@ -3,7 +3,7 @@ import evaluation
 from evaluation import Cider
 from data.dataset_kd import build_coco_dataloaders
 from models.detector import build_detector
-from models.s2s.transformer_word import Transformer
+from models.s2s.transformer import Transformer
 from models.losses import FocalLossWithLogitsNegLoss
 from models.metric import MultiLabelAccuracy, mAPMeter
 from pycocotools.coco import COCO
@@ -24,8 +24,6 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 test = False
 random.seed(1234)
@@ -38,23 +36,23 @@ def evaluate_metrics(model, dataloader, topk):
     running_len = 0
     running_acc = 0
     acc = 0
-    with tqdm(desc='Evaluation - %d' % topk, unit='it', total=len(dataloader)) as pbar:
+    with tqdm(desc='Evaluation - %f' % topk, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
             image_id, samples, labels = batch['image_id'], batch['samples'], batch['labels']
             samples['grid'] = samples['grid'].to(device)
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             with torch.no_grad():
-                out = model(samples)
+                out = model.forward_word(samples)
             
             out = out.sigmoid()
             res = torch.zeros_like(out)
-            if topk>0:
+            if topk>1:
                 topk_ids = out.topk(k=topk, dim=1)[1]
                 for i in range(res.shape[0]):
                     res[i].scatter_(dim=0, index=topk_ids[i], src=torch.ones_like(res[i]))
             else:
-                outt = out.gt(0.4)
+                outt = out.gt(topk)
                 for i,t in enumerate(outt):
                     topk_ids = torch.nonzero(t, as_tuple=False).squeeze(1)
                     res[i].scatter_(dim=0, index=topk_ids, src=torch.ones_like(res[i]))
@@ -71,55 +69,26 @@ def evaluate_metrics(model, dataloader, topk):
     return acc
 
 if __name__ == '__main__':
-    multiprocessing.set_start_method('spawn')
-    device = torch.device('cuda')
-    args = OmegaConf.load('configs/s2s_word.yaml')
+    args = OmegaConf.load('configs/s2sw.yaml')
     print(args)
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.rank
+    device = torch.device('cuda')
+    multiprocessing.set_start_method('spawn')
 
-    writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.mode, args.exp_name))
+    writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.exp_mode, args.exp_name))
 
     dataloaders, text_field = build_coco_dataloaders(args, device)
-    # if test:
-    #     sys.exit()
     
-    model = Transformer(len(text_field.vocab), text_field.vocab.stoi['<pad>']).to(device)
+    model = Transformer(len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.topk).to(device)
 
-    # for n, p in model.named_parameters():
-    #     if 'detector' in n:
-    #         p.requires_grad = False
-
-    def lambda_lr(s):
-        base_lr = 0.0001
-        if s <= 2:
-            lr = base_lr * (s+1) / 4
-        elif s <= 7:
-            lr = base_lr
-        elif s <= 10:
-            lr = base_lr * 0.2
-        else:
-            lr = base_lr * 0.2 * 0.2
-        print("Epoch: %d, Learning Rate: %f" % (s, lr))
-        return lr
-
-    # Initial conditions
-    optim = Adam(model.parameters(), lr=1, betas=(0.9, 0.98))
-    scheduler = LambdaLR(optim, lambda_lr)
-    
-    loss_fn = FocalLossWithLogitsNegLoss()
-    best_acc = 0.0
-    patience = 0
-    start_epoch = 0
-
-    args.model_path = os.path.join("./ckpts", args.mode, args.exp_name)
-    fname = os.path.join(args.model_path, '%s_best.pth' % args.mode)
-
+    args.model_path = os.path.join("./ckpts", args.exp_mode, args.exp_name)
+    fname = os.path.join(args.model_path, '%s_best.pth' % args.exp_mode)
     if os.path.exists(fname):
         data = torch.load(fname)
         model.load_state_dict(data['state_dict'], strict=False)
-        print('Resuming from epoch %d, validation loss %f' % (
-                data['epoch'], data['val_loss']))
+        print('Resuming from epoch %d, validation loss %f' % ( data['epoch'], data['val_loss']))
 
-    for topk in [-1, 5, 10, 20]:
+    for topk in [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 5, 10, 20]:
         # Validation scores
         acc = evaluate_metrics(model, dataloaders['valid'], topk)
         # Test scores

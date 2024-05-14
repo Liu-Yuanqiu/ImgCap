@@ -3,8 +3,8 @@ import evaluation
 from evaluation import Cider
 from data.dataset_kd import build_coco_dataloaders
 from models.detector import build_detector
-from models.s2s.transformer_word import Transformer
-from models.losses import FocalLossWithLogitsNegLoss, WeightedFocalLossWithLogitsNegLoss
+from models.s2s.transformer import Transformer
+from models.losses import FocalLossWithLogitsNegLoss
 from models.metric import MultiLabelAccuracy, mAPMeter
 from pycocotools.coco import COCO
 import torch
@@ -24,16 +24,12 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-
-
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-test = False
 random.seed(1234)
 torch.manual_seed(1234)
 np.random.seed(1234)
 
 def evaluate_loss(model, dataloader):
-
     # Validation loss
     model.eval()
     running_loss = .0
@@ -44,9 +40,9 @@ def evaluate_loss(model, dataloader):
                 samples['grid'] = samples['grid'].to(device)
                 samples['mask'] = samples['mask'].to(device)
                 labels = labels.to(device)
-                en_out = model(samples)
+                en_out = model.forward_word(samples)
 
-                loss_fl = loss_fn0(en_out, labels)
+                loss_fl = loss_fn(en_out, labels)
                 loss_fl = loss_fl.mean()
                 loss =  loss_fl
                 # loss.backward()
@@ -57,7 +53,7 @@ def evaluate_loss(model, dataloader):
                 pbar.set_postfix(loss=running_loss / (it + 1), loss_fl=loss_fl.item())
                 pbar.update()
 
-                if test:
+                if args.test:
                     break
 
     val_loss = running_loss / len(dataloader)
@@ -74,10 +70,10 @@ def evaluate_metrics(model, dataloader):
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             with torch.no_grad():
-                out = model(samples)
+                out = model.forward_word(samples)
             
             out = out.sigmoid()
-            topk_ids = out.topk(k=20, dim=1)[1]
+            topk_ids = out.topk(k=args.topk, dim=1)[1]
             res = torch.zeros_like(out)
             for i in range(res.shape[0]):
                 res[i].scatter_(dim=0, index=topk_ids[i], src=torch.ones_like(res[i]))
@@ -97,16 +93,15 @@ def train_xe(model, dataloader, optim):
     running_loss = .0
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
-            
             image_id, samples, labels = batch['image_id'], batch['samples'], batch['labels']
             samples['grid'] = samples['grid'].to(device)
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
-            en_out = model(samples)
+            en_out = model.forward_word(samples)
             
             optim.zero_grad()
 
-            loss_fl = loss_fn0(en_out, labels)
+            loss_fl = loss_fn(en_out, labels)
             loss_fl = loss_fl.mean()
             loss =  loss_fl
             loss.backward()
@@ -119,65 +114,40 @@ def train_xe(model, dataloader, optim):
             pbar.set_postfix(loss=running_loss / (it + 1), loss_fl=loss_fl.item())
             pbar.update()
 
-            if test:
-                if it%100==0:
-                    print("Epoch: %d, it: %d, Learning Rate: %f" % (e, it, optim.param_groups[0]['lr']))
+            if args.test:
                 break
     
     loss = running_loss / len(dataloader)
     return loss
 
 if __name__ == '__main__':
-    args = OmegaConf.load('configs/s2s_word.yaml')
+    args = OmegaConf.load('configs/s2sw.yaml')
     print(args)
     os.environ["CUDA_VISIBLE_DEVICES"] = args.rank
     device = torch.device('cuda')
     multiprocessing.set_start_method('spawn')
 
-    writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.mode, args.exp_name))
+    writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.exp_mode, args.exp_name))
 
     dataloaders, text_field = build_coco_dataloaders(args, device)
-    # if test:
-    #     sys.exit()
     
-    model = Transformer(len(text_field.vocab), text_field.vocab.stoi['<pad>']).to(device)
-
-    # for n, p in model.named_parameters():
-    #     if 'detector' in n:
-    #         p.requires_grad = False
-
-    def lambda_lr(s):
-        base_lr = 0.0001
-        if s <= 2:
-            lr = base_lr * (s+1) / 4
-        elif s <= 15:
-            lr = base_lr
-        elif s <= 30:
-            lr = base_lr * 0.2
-        else:
-            lr = base_lr * 0.2 * 0.2
-        print("Epoch: %d, Learning Rate: %f" % (s, lr))
-        return lr
+    model = Transformer(len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.topk).to(device)
 
     # Initial conditions
     optim = Adam(model.parameters(), lr=args.optimizer.lr, betas=(0.9, 0.98))
-    # scheduler = LambdaLR(optim, lambda_lr)
-    # scheduler = CosineAnnealingLR(optim, T_max=args.optimizer.t_max, eta_min=args.optimizer.min_lr)
-    # scheduler = ExponentialLR(optimizer=optim, gamma=args.optimizer.gamma)
-    scheduler = ReduceLROnPlateau(optim, mode='max', factor=0.5, patience=3)
+    scheduler = ReduceLROnPlateau(optim, mode='max', factor=args.optimizer.factor, patience=args.optimizer.patience)
     
-    loss_fn0 = WeightedFocalLossWithLogitsNegLoss()
-    # loss_fn1 = MSELoss()
+    loss_fn = FocalLossWithLogitsNegLoss(alpha=args.loss.alpha, gammaT=args.loss.gammaT, gammaF=args.loss.gammaF, weighted=args.loss.weighted)
     best_acc = 0.0
     patience = 0
     start_epoch = 0
 
-    args.model_path = os.path.join("./ckpts", args.mode, args.exp_name)
+    args.model_path = os.path.join("./ckpts", args.exp_mode, args.exp_name)
     if args.resume_last or args.resume_best:
         if args.resume_last:
-            fname = os.path.join(args.model_path, '%s_last.pth' % args.mode)
+            fname = os.path.join(args.model_path, '%s_last.pth' % args.exp_mode)
         else:
-            fname = os.path.join(args.model_path, '%s_best.pth' % args.mode)
+            fname = os.path.join(args.model_path, '%s_best.pth' % args.exp_mode)
 
         if os.path.exists(fname):
             data = torch.load(fname)
@@ -243,10 +213,10 @@ if __name__ == '__main__':
             'scheduler': scheduler.state_dict(),
             'patience': patience,
             'best_acc': best_acc,
-        }, os.path.join(args.model_path, '%s_last.pth' % args.mode))
+        }, os.path.join(args.model_path, '%s_last.pth' % args.exp_mode))
 
         if best:
-            copyfile(os.path.join(args.model_path, '%s_last.pth' % args.mode), os.path.join(args.model_path, '%s_best.pth' % args.mode))
+            copyfile(os.path.join(args.model_path, '%s_last.pth' % args.exp_mode), os.path.join(args.model_path, '%s_best.pth' % args.exp_mode))
         if exit_train:
             writer.close()
             break

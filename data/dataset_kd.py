@@ -97,6 +97,8 @@ class PairedDataset:
         self.kd_score = 1
         self.gt_score = 1
 
+        self.ex_word = [1647, 3816, 8196, 1506, 8424, 3161, 7915, 4592, 9271, 2029]
+
     def __getitem__(self, index):
         id = self.examples[index]['id']
         filepath = self.examples[index]['image']
@@ -127,7 +129,7 @@ class PairedDataset:
                     pass
                 else:
                     wid = token_gt[j][i]
-                    if wid not in [0, 1, 2, 3]:
+                    if wid not in [0, 1, 2, 3] and wid not in self.ex_word:
                         label[wid] += 1
                     else:
                         pass
@@ -254,7 +256,7 @@ def build_coco_dataloaders(config=None, device='cpu'):
         batch_size=batch_size,
         collate_fn=collators['train'],
         num_workers=config.optimizer.num_workers,
-        shuffle=False,
+        shuffle=True,
         pin_memory=True
     )
     dataloaders['valid'] = DataLoader(

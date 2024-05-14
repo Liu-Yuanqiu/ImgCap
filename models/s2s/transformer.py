@@ -6,19 +6,19 @@ from models.containers import ModuleList
 from models.attention import MultiHeadAttention, PositionWiseFeedForward, sinusoid_encoding_table
 
 class Transformer(nn.Module):
-    def __init__(self, vocab_size, padding_idx, topk, word_encoder=None, N_en=3, N_de=3, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, identity_map_reordering=False, attention_module=None, attention_module_kwargs=None):
+    def __init__(self, vocab_size, padding_idx, topk, N_en=3, N_de=3, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, identity_map_reordering=False, attention_module=None, attention_module_kwargs=None):
         super(Transformer, self).__init__()
-        self.word_encoder = word_encoder
-        self.embed_image = nn.Sequential( 
+        self.image_emb = nn.Sequential( 
             nn.Linear(1024, 512), 
             nn.ReLU(), 
             nn.Dropout(p=0.1), 
             nn.LayerNorm(512))
-        self.encoder_img = nn.ModuleList([EncoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
+        self.encoder = nn.ModuleList([EncoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
                                                        identity_map_reordering=identity_map_reordering, 
                                                        attention_module=attention_module, 
                                                        attention_module_kwargs=attention_module_kwargs) 
                                                        for _ in range(N_en)])
+        self.img2word = nn.Linear(d_model, d_model)
         self.decoder = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
                                                 self_att_module=attention_module, 
                                                 enc_att_module=attention_module, 
@@ -29,18 +29,34 @@ class Transformer(nn.Module):
         self.word_emb = nn.Embedding(vocab_size, d_model, padding_idx=padding_idx)
         self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
         self.fc_word = nn.Linear(d_model, vocab_size, bias=False)
-
+        self.fc = nn.Linear(d_model, vocab_size, bias=False)
         self.topk = topk
 
+    def forward_word(self, images):
+        vis, mask = images['grid'], images['mask']
+        vis = self.image_emb(vis)
+        enc_txt = vis
+        enc_mask = mask
+        for l in self.encoder:
+            enc_txt = l(enc_txt, enc_txt, enc_txt, enc_mask)
+        
+        enc_txt_out = enc_txt[:, 0]
+        enc_txt_out = self.img2word(enc_txt_out)
+        enc_txt_out = self.fc_word(enc_txt_out)
+        return enc_txt_out
+    
     def forward(self, images, labels=None, gen_tag_ratio=None):
         gri_feat, gri_mask = images['grid'], images['mask']
-        gri_feat = self.embed_image(gri_feat)
+        gri_feat = self.image_emb(gri_feat)
 
         enc_img = gri_feat
-        for l in self.encoder_img:
+        for l in self.encoder:
             enc_img = l(enc_img, enc_img, enc_img, gri_mask)
 
-        word_logit = self.word_encoder(images)
+        enc_txt_out = enc_img[:, 0]
+        enc_txt_out = self.img2word(enc_txt_out)
+        word_logit = self.fc_word(enc_txt_out)
+
         with torch.no_grad():
             offline_logit = torch.nn.functional.sigmoid(word_logit.detach())
             prob, pred_topk = offline_logit.topk(self.topk, dim=1, largest=True)
@@ -58,7 +74,7 @@ class Transformer(nn.Module):
         out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
         for l in self.decoder:
             out = l(out, out1, enc_img, gri_mask)
-        out = self.fc_word(out)
+        out = self.fc(out)
         
         return F.log_softmax(out, dim=-1)
 

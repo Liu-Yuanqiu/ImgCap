@@ -1,5 +1,6 @@
 *.pyc
 ckpts
+logs
 evaluation
 models/detector/ops/build/
 models/detector/ops/MultiScaleDeformableAttention.egg-info
