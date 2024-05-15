@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 from torch import nn
 from torch.nn import functional as F
 from torch.distributions import Categorical
@@ -19,6 +20,7 @@ class Transformer(nn.Module):
                                                        attention_module_kwargs=attention_module_kwargs) 
                                                        for _ in range(N_en)])
         self.img2word = nn.Linear(d_model, d_model)
+        self.fc_word = nn.Linear(d_model, vocab_size, bias=False)
         self.decoder = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
                                                 self_att_module=attention_module, 
                                                 enc_att_module=attention_module, 
@@ -28,7 +30,6 @@ class Transformer(nn.Module):
         
         self.word_emb = nn.Embedding(vocab_size, d_model, padding_idx=padding_idx)
         self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
-        self.fc_word = nn.Linear(d_model, vocab_size, bias=False)
         self.fc = nn.Linear(d_model, vocab_size, bias=False)
         self.topk = topk
 
@@ -59,28 +60,28 @@ class Transformer(nn.Module):
 
         with torch.no_grad():
             offline_logit = torch.nn.functional.sigmoid(word_logit.detach())
-            prob, pred_topk = offline_logit.topk(self.topk, dim=1, largest=True)
+            prob, pred_topk = offline_logit.topk(self.topk, dim=1, largest=True, sorted=True)
         if labels is not None and gen_tag_ratio is not None:
-            # fuse the generated tags with GT tags at specific portion X%
-            for batch_idx, lab in enumerate(labels):
-                batch_tag = torch.nonzero(lab, as_tuple=False).squeeze(1)
-                batch_len = min(int((1 - gen_tag_ratio) * len(batch_tag)), self.topk)
-                indices = torch.randperm(batch_len)
-                batch_tag = batch_tag[indices]
-                pred_topk[batch_idx, :batch_len] = batch_tag
-
+            batch_len = int((1 - gen_tag_ratio) * self.topk)
+            _, gt_topk = torch.topk(labels, batch_len, dim=1, largest=True, sorted=True)
+            pred_topk = torch.cat([gt_topk, pred_topk], dim=1)
+            pred_topk = pred_topk[:, :self.topk]
+        
         out1 = self.word_emb(pred_topk)
-        pos_indx = torch.arange(1, enc_img.shape[1] + 1, device='cuda').view(1, -1)
+        pos_indx = torch.arange(1, 20 + 1, device='cuda').view(1, -1)
         out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
         for l in self.decoder:
             out = l(out, out1, enc_img, gri_mask)
+            out_h = self.entropy(out)
+            out_h = out_h.unsqueeze(-1)
+            out1 = out_h * out1 + (1 - out_h) * out
         out = self.fc(out)
         
         return F.log_softmax(out, dim=-1)
 
     def entropy(self, out):
         logit = torch.softmax(self.fc(out), -1)
-        h = -torch.sum(logit * torch.log(logit), -1)
+        h = -torch.sum(logit * torch.log(logit), -1) / np.log(logit.shape[-1])
         return h
     
     @property

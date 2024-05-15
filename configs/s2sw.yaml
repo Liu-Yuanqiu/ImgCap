@@ -1,5 +1,5 @@
 rank: "1"
-exp_name: 'weighted_focal_loss_alpha0.1_gamma2_wo_normalword'
+exp_name: 'weighted_focal_loss_alpha0.5_gamma2_wo_normalword'
 exp_mode: 's2sw'
 resume_last: false
 resume_best: false
@@ -9,7 +9,7 @@ test: false
 topk: 20
 
 loss:
-  alpha: 0.1
+  alpha: 0.5
   gammaT: 2
   gammaF: 2
   weighted: true

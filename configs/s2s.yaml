@@ -1,5 +1,5 @@
-rank: "3"
-exp_name: 'pe_gt20'
+rank: "0"
+exp_name: 'pe_gt20_h'
 exp_mode: 's2s'
 resume_last: false
 resume_best: false

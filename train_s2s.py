@@ -270,11 +270,18 @@ if __name__ == '__main__':
     model = Transformer(len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.topk).to(device)
 
     if not args.gt_infer:
-        fname = os.path.join('./ckpts', 's2sw', 'weighted_focal_loss_alpha0.1_gamma2_wo_normalword', 's2sw_best.pth')
+        fname = os.path.join('./ckpts', 's2sw', 'weighted_focal_loss_alpha0.5_gamma2_wo_normalword', 's2sw_best.pth')
         if os.path.exists(fname):
             data = torch.load(fname)
             model.load_state_dict(data['state_dict'], strict=False)
             print('Resumed word encoder.')
+
+        fname = os.path.join('./ckpts', 's2sw', 'weighted_focal_loss_alpha0.5_gamma2_wo_normalword', 's2sw_best.pth')
+        if os.path.exists(fname):
+            data = torch.load(fname)
+            decoder_state_dict = {key: value for key, value in data['state_dict'].items() if ('decoder' in key or 'word_emb' in key or 'fc'==key)}
+            model.load_state_dict(decoder_state_dict, strict=False)
+            print('Resumed decoder.')
 
     # Initial conditions
     optim = Adam(model.parameters(), lr=args.optimizer.lr, betas=(0.9, 0.98))
