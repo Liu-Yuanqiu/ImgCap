@@ -43,6 +43,17 @@ class MLCrossEntropy(nn.Module):
         # loss = torch.sum(loss) / torch.sum(mask2)
         # return loss
 
+class MultiClassCrossEntropy(nn.Module):
+    def __init__(self,):
+        super(MultiClassCrossEntropy, self).__init__()
+
+    def forward(self, logit, target):
+        logit = F.log_softmax(logit + 1e-15, dim=-1)
+        loss = - logit * target
+        loss = torch.sum(loss, dim=-1)
+        loss = loss.mean()
+        return loss
+    
 class FocalLossWithLogitsNegLoss(nn.Module):
     def __init__(self, alpha=0.1, gammaT=2, gammaF=2, weighted=False):
         super().__init__()
@@ -64,5 +75,6 @@ class FocalLossWithLogitsNegLoss(nn.Module):
 
         log_sigmoid_inv = torch.nn.functional.logsigmoid(-pred)
         loss += (target == 0) * (1 - self.alpha) * torch.pow(sigmoid_pred, self.gammaF) * log_sigmoid_inv
-
-        return -loss
+        loss = -loss
+        # loss = torch.sum(loss, dim=-1)
+        return loss.mean()

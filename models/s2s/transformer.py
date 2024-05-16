@@ -64,8 +64,9 @@ class Transformer(nn.Module):
         if labels is not None and gen_tag_ratio is not None:
             batch_len = int((1 - gen_tag_ratio) * self.topk)
             _, gt_topk = torch.topk(labels, batch_len, dim=1, largest=True, sorted=True)
+            pred_topk = pred_topk[:, batch_len:]
             pred_topk = torch.cat([gt_topk, pred_topk], dim=1)
-            pred_topk = pred_topk[:, :self.topk]
+            # pred_topk = pred_topk[:, :self.topk]
         
         out1 = self.word_emb(pred_topk)
         pos_indx = torch.arange(1, 20 + 1, device='cuda').view(1, -1)
@@ -77,7 +78,8 @@ class Transformer(nn.Module):
             out1 = out_h * out1 + (1 - out_h) * out
         out = self.fc(out)
         
-        return F.log_softmax(out, dim=-1)
+        return word_logit, F.log_softmax(out, dim=-1)
+        # return F.log_softmax(word_logit, dim=-1), F.log_softmax(out, dim=-1)
 
     def entropy(self, out):
         logit = torch.softmax(self.fc(out), -1)

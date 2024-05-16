@@ -5,7 +5,7 @@ from data.dataset_kd import build_coco_dataloaders
 from models.detector import build_detector
 from models.s2s.transformer import Transformer
 from models.s2s.transformer_word import Transformer as Word
-from models.losses import MLCrossEntropy, FocalLossWithLogitsNegLoss
+from models.losses import MLCrossEntropy, FocalLossWithLogitsNegLoss, MultiClassCrossEntropy
 from pycocotools.coco import COCO
 import torch
 from torch.optim import Adam
@@ -41,18 +41,20 @@ def evaluate_loss(model, dataloader):
                 samples['mask'] = samples['mask'].to(device)
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
-                logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
+                logit_w, logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
+                # Word
+                loss_w = loss_fn_ml(logit_w, labels)
                 # XE
                 seq_len = min(logit.shape[1], tokens_kd.shape[1])
                 out_ce = logit[:, :seq_len].contiguous()
                 tokens_kd = tokens_kd[:, :seq_len].contiguous()
                 loss_ce = loss_fn(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
 
-                loss = loss_ce
+                loss = loss_ce + loss_w
                 this_loss = loss.item()
                 running_loss += this_loss
 
-                pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item())
+                pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss_w=loss_w.item())
                 pbar.update()
 
                 if args.test:
@@ -73,7 +75,7 @@ def evaluate_metrics(model, dataloader, text_field):
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             with torch.no_grad():
-                logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
+                _, logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
             
             _, out = torch.max(logit, -1)
             caps_gen = text_field.decode(out, join_words=False, deduplication=True)
@@ -99,23 +101,25 @@ def train_xe(model, dataloader, optim, text_field):
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             tokens_kd = tokens_kd.to(device)
-            logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
+            logit_w, logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
             
             optim.zero_grad()
+            # Word
+            loss_w = loss_fn_ml(logit_w, labels)
             # XE
             seq_len = min(logit.shape[1], tokens_kd.shape[1])
             out_ce = logit[:, :seq_len].contiguous()
             tokens_kd = tokens_kd[:, :seq_len].contiguous()
             loss_ce = loss_fn(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
 
-            loss = loss_ce
+            loss = loss_ce + loss_w
             loss.backward()
 
             optim.step()
             this_loss = loss.item()
             running_loss += this_loss
 
-            pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item())
+            pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss_w=loss_w.item())
             pbar.update()
 
             if args.test:
@@ -270,24 +274,19 @@ if __name__ == '__main__':
     model = Transformer(len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.topk).to(device)
 
     if not args.gt_infer:
-        fname = os.path.join('./ckpts', 's2sw', 'weighted_focal_loss_alpha0.5_gamma2_wo_normalword', 's2sw_best.pth')
-        if os.path.exists(fname):
-            data = torch.load(fname)
-            model.load_state_dict(data['state_dict'], strict=False)
-            print('Resumed word encoder.')
-
-        fname = os.path.join('./ckpts', 's2sw', 'weighted_focal_loss_alpha0.5_gamma2_wo_normalword', 's2sw_best.pth')
+        fname = os.path.join('./ckpts', 's2s', 'pe_gt20_sorted_entropy', 's2s_best.pth')
         if os.path.exists(fname):
             data = torch.load(fname)
             decoder_state_dict = {key: value for key, value in data['state_dict'].items() if ('decoder' in key or 'word_emb' in key or 'fc'==key)}
             model.load_state_dict(decoder_state_dict, strict=False)
-            print('Resumed decoder.')
+            print('Resumed pretrained Gt model.')
 
     # Initial conditions
     optim = Adam(model.parameters(), lr=args.optimizer.lr, betas=(0.9, 0.98))
     scheduler = ReduceLROnPlateau(optim, mode='max', factor=args.optimizer.factor, patience=args.optimizer.patience)
 
     loss_fn = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
+    loss_fn_ml = FocalLossWithLogitsNegLoss(alpha=args.loss.alpha, gammaT=args.loss.gammaT, gammaF=args.loss.gammaF, weighted=args.loss.weighted)
 
     best_cider = .0
     patience = 0
@@ -324,6 +323,8 @@ if __name__ == '__main__':
             gen_tag_ratio = torch.tensor(min(1, (e+1)/20)).cuda()
             if args.gt_infer:
                 gen_tag_ratio = torch.tensor(0).cuda()
+            else:
+                gen_tag_ratio = torch.tensor(1).cuda()
             print("Epoch: %d, Gen Tag Ratio: %f" % (e, gen_tag_ratio.item()))
             train_loss = train_xe(model, dataloaders['train'], optim, text_field)
             writer.add_scalar('data/train_loss', train_loss, e)
@@ -333,6 +334,11 @@ if __name__ == '__main__':
             writer.add_scalar('data/reward', reward, e)
             writer.add_scalar('data/reward_baseline', reward_baseline, e)
 
+        if args.gt_infer:
+            gen_tag_ratio = torch.tensor(0).cuda()
+        else:
+            gen_tag_ratio = torch.tensor(1).cuda()
+            
         if not use_rl:
             # Validation loss
             val_loss = evaluate_loss(model, dataloaders['valid'])

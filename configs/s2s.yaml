@@ -1,5 +1,5 @@
-rank: "0"
-exp_name: 'pe_gt20_h'
+rank: "2"
+exp_name: 'pe_gen20_wordfl_sorted_entropy'
 exp_mode: 's2s'
 resume_last: false
 resume_best: false
@@ -7,7 +7,13 @@ logs_folder: './logs/'
 test: false
 
 topk: 20
-gt_infer: true
+gt_infer: false
+
+loss:
+  alpha: 0.5
+  gammaT: 0
+  gammaF: 1
+  weighted: false
 
 optimizer:
   batch_size: 32
