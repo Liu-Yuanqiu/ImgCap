@@ -1,5 +1,5 @@
-rank: "2"
-exp_name: 'pe_gen20_wordfl_sorted_entropy'
+rank: "3"
+exp_name: 'eed_pe_gen20_sorted_entropy'
 exp_mode: 's2s'
 resume_last: false
 resume_best: false

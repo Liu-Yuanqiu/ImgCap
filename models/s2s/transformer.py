@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from torch import nn
+from torch.nn import NLLLoss
 from torch.nn import functional as F
 from torch.distributions import Categorical
 from models.containers import ModuleList
@@ -21,6 +22,11 @@ class Transformer(nn.Module):
                                                        for _ in range(N_en)])
         self.img2word = nn.Linear(d_model, d_model)
         self.fc_word = nn.Linear(d_model, vocab_size, bias=False)
+        self.encoderw = nn.ModuleList([EncoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
+                                                       identity_map_reordering=identity_map_reordering, 
+                                                       attention_module=attention_module, 
+                                                       attention_module_kwargs=attention_module_kwargs) 
+                                                       for _ in range(N_en)])
         self.decoder = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
                                                 self_att_module=attention_module, 
                                                 enc_att_module=attention_module, 
@@ -32,6 +38,8 @@ class Transformer(nn.Module):
         self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
         self.fc = nn.Linear(d_model, vocab_size, bias=False)
         self.topk = topk
+
+        self.loss = NLLLoss(ignore_index=padding_idx)
 
     def forward_word(self, images):
         vis, mask = images['grid'], images['mask']
@@ -54,21 +62,27 @@ class Transformer(nn.Module):
         for l in self.encoder:
             enc_img = l(enc_img, enc_img, enc_img, gri_mask)
 
-        enc_txt_out = enc_img[:, 0]
-        enc_txt_out = self.img2word(enc_txt_out)
-        word_logit = self.fc_word(enc_txt_out)
 
-        with torch.no_grad():
-            offline_logit = torch.nn.functional.sigmoid(word_logit.detach())
-            prob, pred_topk = offline_logit.topk(self.topk, dim=1, largest=True, sorted=True)
-        if labels is not None and gen_tag_ratio is not None:
-            batch_len = int((1 - gen_tag_ratio) * self.topk)
-            _, gt_topk = torch.topk(labels, batch_len, dim=1, largest=True, sorted=True)
-            pred_topk = pred_topk[:, batch_len:]
-            pred_topk = torch.cat([gt_topk, pred_topk], dim=1)
+        out1 = self.img2word(enc_img)
+        for l in self.encoderw:
+            out1 = l(out1, out1, out1)
+        out1 = out1[:, :self.topk]
+        out2 = self.fc(out1)  
+
+        # enc_txt_out = enc_img[:, 0]
+        # enc_txt_out = self.img2word(enc_txt_out)
+        # word_logit = self.fc_word(enc_txt_out)
+
+        # with torch.no_grad():
+        #     offline_logit = torch.nn.functional.sigmoid(word_logit.detach())
+        #     prob, pred_topk = offline_logit.topk(self.topk, dim=1, largest=True, sorted=True)
+        # if labels is not None and gen_tag_ratio is not None:
+        #     batch_len = int((1 - gen_tag_ratio) * self.topk)
+        #     _, gt_topk = torch.topk(labels, batch_len, dim=1, largest=True, sorted=True)
+        #     pred_topk = pred_topk[:, batch_len:]
+        #     pred_topk = torch.cat([gt_topk, pred_topk], dim=1)
             # pred_topk = pred_topk[:, :self.topk]
         
-        out1 = self.word_emb(pred_topk)
         pos_indx = torch.arange(1, 20 + 1, device='cuda').view(1, -1)
         out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
         for l in self.decoder:
@@ -78,8 +92,7 @@ class Transformer(nn.Module):
             out1 = out_h * out1 + (1 - out_h) * out
         out = self.fc(out)
         
-        return word_logit, F.log_softmax(out, dim=-1)
-        # return F.log_softmax(word_logit, dim=-1), F.log_softmax(out, dim=-1)
+        return F.log_softmax(out2, dim=-1), F.log_softmax(out, dim=-1)
 
     def entropy(self, out):
         logit = torch.softmax(self.fc(out), -1)

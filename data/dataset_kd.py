@@ -72,11 +72,11 @@ class PairedCollator(DictionaryCollator):
         labels_out = torch.from_numpy(np.stack(labels_out, 0))
         b['labels_out'] = labels_out
 
-        # truncate
-        tokens_kd_new = [c[:self.max_len] for c in b['tokens_kd']]
-        # max_len = max([len(c) for c in b['tokens_kd']])
         max_len = 20
-
+        # truncate
+        tokens_kd_new = [c[:max_len] for c in b['tokens_kd']]
+        # max_len = max([len(c) for c in b['tokens_kd']])
+    
         padded = []
         for c in tokens_kd_new:
             caption = c + [self.pad_idx] * (max_len - len(c))

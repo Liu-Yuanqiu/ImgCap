@@ -42,13 +42,15 @@ def evaluate_loss(model, dataloader):
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
                 logit_w, logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
+
                 # Word
-                loss_w = loss_fn_ml(logit_w, labels)
+                prob, target = torch.topk(labels, args.topk, dim=1, largest=True, sorted=True)
+                mask = (prob > 0).float().view(-1)
+                loss_w = loss_fn(logit_w.view(-1, len(text_field.vocab)), target.view(-1))
+                loss_w = torch.sum(loss_w*mask, -1) / torch.sum(mask, -1)
                 # XE
-                seq_len = min(logit.shape[1], tokens_kd.shape[1])
-                out_ce = logit[:, :seq_len].contiguous()
-                tokens_kd = tokens_kd[:, :seq_len].contiguous()
-                loss_ce = loss_fn(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+                loss_ce = loss_fn(logit.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+                loss_ce = loss_ce.mean()
 
                 loss = loss_ce + loss_w
                 this_loss = loss.item()
@@ -105,12 +107,13 @@ def train_xe(model, dataloader, optim, text_field):
             
             optim.zero_grad()
             # Word
-            loss_w = loss_fn_ml(logit_w, labels)
+            prob, target = torch.topk(labels, args.topk, dim=1, largest=True, sorted=True)
+            mask = (prob > 0).float().view(-1)
+            loss_w = loss_fn(logit_w.view(-1, len(text_field.vocab)), target.view(-1))
+            loss_w = torch.sum(loss_w*mask, -1) / torch.sum(mask, -1)
             # XE
-            seq_len = min(logit.shape[1], tokens_kd.shape[1])
-            out_ce = logit[:, :seq_len].contiguous()
-            tokens_kd = tokens_kd[:, :seq_len].contiguous()
-            loss_ce = loss_fn(out_ce.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+            loss_ce = loss_fn(logit.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
+            loss_ce = loss_ce.mean()
 
             loss = loss_ce + loss_w
             loss.backward()
@@ -273,19 +276,19 @@ if __name__ == '__main__':
 
     model = Transformer(len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.topk).to(device)
 
-    if not args.gt_infer:
-        fname = os.path.join('./ckpts', 's2s', 'pe_gt20_sorted_entropy', 's2s_best.pth')
-        if os.path.exists(fname):
-            data = torch.load(fname)
-            decoder_state_dict = {key: value for key, value in data['state_dict'].items() if ('decoder' in key or 'word_emb' in key or 'fc'==key)}
-            model.load_state_dict(decoder_state_dict, strict=False)
-            print('Resumed pretrained Gt model.')
+    # if not args.gt_infer:
+    #     fname = os.path.join('./ckpts', 's2s', 'pe_gt20_sorted_entropy', 's2s_best.pth')
+    #     if os.path.exists(fname):
+    #         data = torch.load(fname)
+    #         decoder_state_dict = {key: value for key, value in data['state_dict'].items() if ('decoder' in key or 'word_emb' in key or 'fc'==key)}
+    #         model.load_state_dict(decoder_state_dict, strict=False)
+    #         print('Resumed pretrained Gt model.')
 
     # Initial conditions
     optim = Adam(model.parameters(), lr=args.optimizer.lr, betas=(0.9, 0.98))
     scheduler = ReduceLROnPlateau(optim, mode='max', factor=args.optimizer.factor, patience=args.optimizer.patience)
 
-    loss_fn = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'])
+    loss_fn = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'], reduction='none')
     loss_fn_ml = FocalLossWithLogitsNegLoss(alpha=args.loss.alpha, gammaT=args.loss.gammaT, gammaF=args.loss.gammaF, weighted=args.loss.weighted)
 
     best_cider = .0
