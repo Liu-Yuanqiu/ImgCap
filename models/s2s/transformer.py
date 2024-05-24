@@ -34,25 +34,13 @@ class Transformer(nn.Module):
                                                 enc_att_module_kwargs=attention_module_kwargs) 
                                                 for _ in range(N_de)])    
         
-        self.word_emb = nn.Embedding(vocab_size, d_model, padding_idx=padding_idx)
+        # self.word_emb = nn.Embedding(vocab_size, d_model, padding_idx=padding_idx)
+        self.word_emb = WordEmbedding(vocab_size, d_model, padding_idx)
         self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
         self.fc = nn.Linear(d_model, vocab_size, bias=False)
         self.topk = topk
-
-        self.loss = NLLLoss(ignore_index=padding_idx)
-
-    def forward_word(self, images):
-        vis, mask = images['grid'], images['mask']
-        vis = self.image_emb(vis)
-        enc_txt = vis
-        enc_mask = mask
-        for l in self.encoder:
-            enc_txt = l(enc_txt, enc_txt, enc_txt, enc_mask)
-        
-        enc_txt_out = enc_txt[:, 0]
-        enc_txt_out = self.img2word(enc_txt_out)
-        enc_txt_out = self.fc_word(enc_txt_out)
-        return enc_txt_out
+        self.bos_idx = 2
+        self.mse_loss = nn.MSELoss()
     
     def forward(self, images, labels=None, gen_tag_ratio=None):
         gri_feat, gri_mask = images['grid'], images['mask']
@@ -63,12 +51,14 @@ class Transformer(nn.Module):
             enc_img = l(enc_img, enc_img, enc_img, gri_mask)
 
 
-        out1 = self.img2word(enc_img)
+        # out1 = self.img2word(enc_img)
+        enc_txt = gri_feat
         for l in self.encoderw:
-            out1 = l(out1, out1, out1)
-        out1 = out1[:, :self.topk]
-        out2 = self.fc(out1)  
-
+            enc_txt = l(enc_txt, enc_txt, enc_txt, gri_mask)
+        out1 = enc_txt[:, :self.topk]
+        _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
+        label_emb = self.word_emb.embed(gt_topk)
+        mse_loss = self.mse_loss(out1, label_emb)
         # enc_txt_out = enc_img[:, 0]
         # enc_txt_out = self.img2word(enc_txt_out)
         # word_logit = self.fc_word(enc_txt_out)
@@ -87,12 +77,15 @@ class Transformer(nn.Module):
         out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
         for l in self.decoder:
             out = l(out, out1, enc_img, gri_mask)
-            out_h = self.entropy(out)
-            out_h = out_h.unsqueeze(-1)
-            out1 = out_h * out1 + (1 - out_h) * out
-        out = self.fc(out)
+            # out_h = self.entropy(out)
+            # out_bos = self.word_emb(torch.full(size=(out.shape[0], 1), fill_value=self.bos_idx).cuda())
+            # out_res = torch.cat([out_bos, out], dim=1)
+            # out_res = out_res[:, :20]
+            # out_h = out_h.unsqueeze(-1)
+            # out = out_h * out_res + (1 - out_h) * out
+        out = self.word_emb.fc(out)
         
-        return F.log_softmax(out2, dim=-1), F.log_softmax(out, dim=-1)
+        return mse_loss, F.log_softmax(out, dim=-1)
 
     def entropy(self, out):
         logit = torch.softmax(self.fc(out), -1)
@@ -108,6 +101,23 @@ class Transformer(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
+class WordEmbedding(nn.Module):
+    def __init__(self, vocab_size, dim, padding_idx):
+        super(WordEmbedding, self).__init__()
+        self.vocab_size = vocab_size
+        self.dim = dim
+        self.padding_idx = padding_idx
+        self.weight = nn.Parameter(torch.randn(self.vocab_size, self.dim))
+        if self.padding_idx is not None:
+            with torch.no_grad():
+                self.weight[self.padding_idx].fill_(0)
+    
+    def embed(self, tenosr):
+        return torch.matmul(F.one_hot(tenosr, num_classes=self.vocab_size).type(torch.float32), self.weight)
+    
+    def fc(self, tensor):
+        # _, idx = torch.max(torch.matmul(tensor, self.weight.t()), dim=-1)
+        return torch.matmul(tensor, self.weight.t())
 
 class EncoderLayer(nn.Module):
     def __init__(self, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, identity_map_reordering=False,

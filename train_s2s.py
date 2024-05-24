@@ -41,22 +41,22 @@ def evaluate_loss(model, dataloader):
                 samples['mask'] = samples['mask'].to(device)
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
-                logit_w, logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
+                loss_mse, logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
 
                 # Word
-                prob, target = torch.topk(labels, args.topk, dim=1, largest=True, sorted=True)
-                mask = (prob > 0).float().view(-1)
-                loss_w = loss_fn(logit_w.view(-1, len(text_field.vocab)), target.view(-1))
-                loss_w = torch.sum(loss_w*mask, -1) / torch.sum(mask, -1)
+                # prob, target = torch.topk(labels, args.topk, dim=1, largest=True, sorted=True)
+                # mask = (prob > 0).float().view(-1)
+                # loss_w = loss_fn(logit_w.view(-1, len(text_field.vocab)), target.view(-1))
+                # loss_w = torch.sum(loss_w*mask, -1) / torch.sum(mask, -1)
                 # XE
                 loss_ce = loss_fn(logit.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
                 loss_ce = loss_ce.mean()
 
-                loss = loss_ce + loss_w
+                loss = loss_ce + loss_mse
                 this_loss = loss.item()
                 running_loss += this_loss
 
-                pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss_w=loss_w.item())
+                pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss_mse=loss_mse.item())
                 pbar.update()
 
                 if args.test:
@@ -103,26 +103,26 @@ def train_xe(model, dataloader, optim, text_field):
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             tokens_kd = tokens_kd.to(device)
-            logit_w, logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
+            loss_mse, logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
             
             optim.zero_grad()
             # Word
-            prob, target = torch.topk(labels, args.topk, dim=1, largest=True, sorted=True)
-            mask = (prob > 0).float().view(-1)
-            loss_w = loss_fn(logit_w.view(-1, len(text_field.vocab)), target.view(-1))
-            loss_w = torch.sum(loss_w*mask, -1) / torch.sum(mask, -1)
+            # prob, target = torch.topk(labels, args.topk, dim=1, largest=True, sorted=True)
+            # mask = (prob > 0).float().view(-1)
+            # loss_w = loss_fn(logit_w.view(-1, len(text_field.vocab)), target.view(-1))
+            # loss_w = torch.sum(loss_w*mask, -1) / torch.sum(mask, -1)
             # XE
             loss_ce = loss_fn(logit.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
             loss_ce = loss_ce.mean()
 
-            loss = loss_ce + loss_w
+            loss = loss_ce + loss_mse
             loss.backward()
 
             optim.step()
             this_loss = loss.item()
             running_loss += this_loss
 
-            pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss_w=loss_w.item())
+            pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss_mse=loss_mse.item())
             pbar.update()
 
             if args.test:
@@ -273,7 +273,8 @@ if __name__ == '__main__':
 
     dataloaders, text_field = build_coco_dataloaders(args, device)
     cider_train = Cider()
-
+    print(text_field.vocab.stoi['<bos>'])
+    print(text_field.vocab.stoi['<pad>'])
     model = Transformer(len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.topk).to(device)
 
     # if not args.gt_infer:
@@ -283,10 +284,21 @@ if __name__ == '__main__':
     #         decoder_state_dict = {key: value for key, value in data['state_dict'].items() if ('decoder' in key or 'word_emb' in key or 'fc'==key)}
     #         model.load_state_dict(decoder_state_dict, strict=False)
     #         print('Resumed pretrained Gt model.')
-
+    def lambda_lr(s):
+        base_lr = args.optimizer.lr
+        if s <= 3:
+            lr = base_lr * (s+1) / 4
+        elif s <= 36:
+            lr = base_lr
+        elif s <= 47:
+            lr = base_lr * 0.2
+        else:
+            lr = base_lr * 0.2 * 0.2
+        return lr
     # Initial conditions
-    optim = Adam(model.parameters(), lr=args.optimizer.lr, betas=(0.9, 0.98))
-    scheduler = ReduceLROnPlateau(optim, mode='max', factor=args.optimizer.factor, patience=args.optimizer.patience)
+    optim = Adam(model.parameters(), lr=1, betas=(0.9, 0.98))
+    # scheduler = ReduceLROnPlateau(optim, mode='max', factor=args.optimizer.factor, patience=args.optimizer.patience)
+    scheduler = LambdaLR(optim, lambda_lr)
 
     loss_fn = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'], reduction='none')
     loss_fn_ml = FocalLossWithLogitsNegLoss(alpha=args.loss.alpha, gammaT=args.loss.gammaT, gammaF=args.loss.gammaF, weighted=args.loss.weighted)
@@ -407,4 +419,4 @@ if __name__ == '__main__':
             writer.close()
             break
         
-        scheduler.step(test_cider)
+        scheduler.step()

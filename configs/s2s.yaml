@@ -1,8 +1,8 @@
-rank: "3"
-exp_name: 'eed_pe_gen20_sorted_entropy'
+rank: "1"
+exp_name: 'eed_pe_gen20_sorted_mse_newwordemb'
 exp_mode: 's2s'
 resume_last: false
-resume_best: false
+resume_best: true
 logs_folder: './logs/'
 test: false
 
