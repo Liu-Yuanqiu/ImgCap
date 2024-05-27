@@ -2,7 +2,7 @@ rank: "1"
 exp_name: 'eed_pe_gen20_sorted_mse_newwordemb'
 exp_mode: 's2s'
 resume_last: false
-resume_best: true
+resume_best: false
 logs_folder: './logs/'
 test: false
 

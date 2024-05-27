@@ -288,9 +288,9 @@ if __name__ == '__main__':
         base_lr = args.optimizer.lr
         if s <= 3:
             lr = base_lr * (s+1) / 4
-        elif s <= 36:
+        elif s <= 100:
             lr = base_lr
-        elif s <= 47:
+        elif s <= 200:
             lr = base_lr * 0.2
         else:
             lr = base_lr * 0.2 * 0.2
