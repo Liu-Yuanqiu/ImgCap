@@ -18,6 +18,7 @@ from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 import os
 import sys
+import argparse
 import numpy as np
 import itertools
 import multiprocessing
@@ -41,22 +42,17 @@ def evaluate_loss(model, dataloader):
                 samples['mask'] = samples['mask'].to(device)
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
-                loss_mse, logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
+                losses = model(samples, labels, tokens_kd)
 
-                # Word
-                # prob, target = torch.topk(labels, args.topk, dim=1, largest=True, sorted=True)
-                # mask = (prob > 0).float().view(-1)
-                # loss_w = loss_fn(logit_w.view(-1, len(text_field.vocab)), target.view(-1))
-                # loss_w = torch.sum(loss_w*mask, -1) / torch.sum(mask, -1)
-                # XE
-                loss_ce = loss_fn(logit.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
-                loss_ce = loss_ce.mean()
-
-                loss = loss_ce + loss_mse
+                loss = 0
+                for v in losses.values():
+                    loss += v
                 this_loss = loss.item()
                 running_loss += this_loss
-
-                pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss_mse=loss_mse.item())
+                losses_info = {}
+                for k in losses:
+                    losses_info[k] = losses[k].item()
+                pbar.set_postfix(loss=running_loss / (it + 1), losses=losses_info)
                 pbar.update()
 
                 if args.test:
@@ -77,7 +73,10 @@ def evaluate_metrics(model, dataloader, text_field):
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             with torch.no_grad():
-                _, logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
+                if teacher_model is None:
+                    _, logit = model.infer(samples, labels)
+                else:
+                    _, logit = model.infer(samples)
             
             _, out = torch.max(logit, -1)
             caps_gen = text_field.decode(out, join_words=False, deduplication=True)
@@ -103,26 +102,21 @@ def train_xe(model, dataloader, optim, text_field):
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             tokens_kd = tokens_kd.to(device)
-            loss_mse, logit = model(samples, labels, gen_tag_ratio=gen_tag_ratio)
-            
+            losses = model(samples, labels, tokens_kd)
+            # print(losses)
             optim.zero_grad()
-            # Word
-            # prob, target = torch.topk(labels, args.topk, dim=1, largest=True, sorted=True)
-            # mask = (prob > 0).float().view(-1)
-            # loss_w = loss_fn(logit_w.view(-1, len(text_field.vocab)), target.view(-1))
-            # loss_w = torch.sum(loss_w*mask, -1) / torch.sum(mask, -1)
-            # XE
-            loss_ce = loss_fn(logit.view(-1, len(text_field.vocab)), tokens_kd.view(-1))
-            loss_ce = loss_ce.mean()
-
-            loss = loss_ce + loss_mse
+            loss = 0
+            for v in losses.values():
+                loss += v
             loss.backward()
 
             optim.step()
             this_loss = loss.item()
             running_loss += this_loss
-
-            pbar.set_postfix(loss=running_loss / (it + 1), loss_ce=loss_ce.item(), loss_mse=loss_mse.item())
+            losses_info = {}
+            for k in losses:
+                losses_info[k] = losses[k].item()
+            pbar.set_postfix(loss=running_loss / (it + 1), losses=losses_info)
             pbar.update()
 
             if args.test:
@@ -263,49 +257,88 @@ def train_scst1(model, dataloader, optim, cider, text_field):
     return loss, reward, reward_baseline
 
 if __name__ == '__main__':
-    args = OmegaConf.load('configs/s2s.yaml')
+    parser = argparse.ArgumentParser(description='S2S')
+    parser.add_argument('--rank', type=str, default='0')
+    parser.add_argument('--exp_mode', type=str, default='s2s')
+    parser.add_argument('--exp_name', type=str, default='eed_kd_l2')
+    parser.add_argument('--log_folder', type=str, default='./logs')
+    parser.add_argument('--data_path', type=str, default='../mscoco')
+    parser.add_argument('--use_cache', action='store_true', default='True')
+    parser.add_argument('--resume_last', action='store_true')
+    parser.add_argument('--resume_best', action='store_true')
+    parser.add_argument('--test', action='store_true')
+
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--workers', type=int, default=4)
+    parser.add_argument('--learning_rate', type=float, default=0.0001)
+    parser.add_argument('--epoch1', type=int, default=100)
+    parser.add_argument('--epoch2', type=int, default=200)
+    parser.add_argument('--patience', type=int, default=5)
+
+    parser.add_argument('--layer_num', type=int, default=3)
+    parser.add_argument('--feat_dim', type=int, default=1024)
+    parser.add_argument('--seq_len', type=int, default=20)
+    parser.add_argument('--use_loss_word', action='store_true')
+    parser.add_argument('--use_loss_ce', action='store_true')
+    parser.add_argument('--use_loss_l2', action='store_true')
+    parser.add_argument('--use_loss_entropy', action='store_true')
+    parser.add_argument('--use_loss_kl', action='store_true')
+    parser.add_argument('--teacher_model_path', type=str, default='/s2s/pe_gt20_sorted_entropy/s2s_best.pth')
+    args = parser.parse_args()
     print(args)
     os.environ["CUDA_VISIBLE_DEVICES"] = args.rank
     device = torch.device('cuda')
     multiprocessing.set_start_method('spawn')
 
-    writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.exp_mode, args.exp_name))
+    writer = SummaryWriter(log_dir=os.path.join(args.log_folder, args.exp_mode, args.exp_name))
 
-    dataloaders, text_field = build_coco_dataloaders(args, device)
+    dataloaders, text_field = build_coco_dataloaders(args.use_cache, args.data_path, args.batch_size, args.workers)
     cider_train = Cider()
     print(text_field.vocab.stoi['<bos>'])
     print(text_field.vocab.stoi['<pad>'])
-    model = Transformer(len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.topk).to(device)
+    if args.use_loss_kl:
+        fname = os.path.join('./ckpts', args.teacher_model_path)
+        if os.path.exists(fname):
+            teacher_model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.seq_len, \
+                        N_en=args.layer_num, N_wo=args.layer_num, N_de=args.layer_num).to(device)
+            data = torch.load(fname)
+            torch.set_rng_state(data['torch_rng_state'])
+            torch.cuda.set_rng_state(data['cuda_rng_state'])
+            np.random.set_state(data['numpy_rng_state'])
+            random.setstate(data['random_rng_state'])
+            teacher_model.load_state_dict(data['state_dict'], strict=False)
+            print('Resuming teacher model from %s and best cider %f' % (
+                fname, data['best_cider']))
+            for n, p in teacher_model.named_parameters():
+                p.requires_grad = False
+        else:
+            teacher_model = None
+    else:
+        teacher_model = None
+    model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.seq_len, \
+                        N_en=args.layer_num, N_wo=args.layer_num, N_de=args.layer_num, teacher_model=teacher_model, \
+                        use_loss_word=args.use_loss_word, use_loss_ce=args.use_loss_ce, use_loss_l2=args.use_loss_l2, \
+                        use_loss_entropy=args.use_loss_entropy, use_loss_kl=args.use_loss_kl).to(device)
 
-    # if not args.gt_infer:
-    #     fname = os.path.join('./ckpts', 's2s', 'pe_gt20_sorted_entropy', 's2s_best.pth')
-    #     if os.path.exists(fname):
-    #         data = torch.load(fname)
-    #         decoder_state_dict = {key: value for key, value in data['state_dict'].items() if ('decoder' in key or 'word_emb' in key or 'fc'==key)}
-    #         model.load_state_dict(decoder_state_dict, strict=False)
-    #         print('Resumed pretrained Gt model.')
+
     def lambda_lr(s):
-        base_lr = args.optimizer.lr
+        base_lr = args.learning_rate
         if s <= 3:
             lr = base_lr * (s+1) / 4
-        elif s <= 100:
+        elif s <= args.epoch1:
             lr = base_lr
-        elif s <= 200:
+        elif s <= args.epoch2:
             lr = base_lr * 0.2
         else:
             lr = base_lr * 0.2 * 0.2
         return lr
     # Initial conditions
     optim = Adam(model.parameters(), lr=1, betas=(0.9, 0.98))
-    # scheduler = ReduceLROnPlateau(optim, mode='max', factor=args.optimizer.factor, patience=args.optimizer.patience)
     scheduler = LambdaLR(optim, lambda_lr)
 
-    loss_fn = NLLLoss(ignore_index=text_field.vocab.stoi['<pad>'], reduction='none')
-    loss_fn_ml = FocalLossWithLogitsNegLoss(alpha=args.loss.alpha, gammaT=args.loss.gammaT, gammaF=args.loss.gammaF, weighted=args.loss.weighted)
-
     best_cider = .0
-    patience = 0
     start_epoch = 0
+    patience = 0
     use_rl = False
 
     args.model_path = os.path.join("./ckpts", args.exp_mode, args.exp_name)
@@ -335,12 +368,6 @@ if __name__ == '__main__':
     for e in range(start_epoch, start_epoch + 100):
         print("Epoch: %d, Learning Rate: %f" % (e, optim.param_groups[0]['lr']))
         if not use_rl:
-            gen_tag_ratio = torch.tensor(min(1, (e+1)/20)).cuda()
-            if args.gt_infer:
-                gen_tag_ratio = torch.tensor(0).cuda()
-            else:
-                gen_tag_ratio = torch.tensor(1).cuda()
-            print("Epoch: %d, Gen Tag Ratio: %f" % (e, gen_tag_ratio.item()))
             train_loss = train_xe(model, dataloaders['train'], optim, text_field)
             writer.add_scalar('data/train_loss', train_loss, e)
         else:
@@ -348,11 +375,6 @@ if __name__ == '__main__':
             writer.add_scalar('data/train_loss', train_loss, e)
             writer.add_scalar('data/reward', reward, e)
             writer.add_scalar('data/reward_baseline', reward_baseline, e)
-
-        if args.gt_infer:
-            gen_tag_ratio = torch.tensor(0).cuda()
-        else:
-            gen_tag_ratio = torch.tensor(1).cuda()
             
         if not use_rl:
             # Validation loss
@@ -391,7 +413,7 @@ if __name__ == '__main__':
             patience += 1
 
         exit_train = False
-        if patience == 10:
+        if patience == args.patience:
             print('patience reached.')
             exit_train = True
 

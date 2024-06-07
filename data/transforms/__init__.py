@@ -19,8 +19,8 @@ def normalize():
 
 
 def get_transform(cfg):
-    resize = RESIZE[cfg.resize_name](cfg.size)
-    if cfg.randaug:
+    resize = RESIZE[cfg['resize_name']](cfg['size'])
+    if cfg['randaug']:
         return {
             'train': Compose([resize, RandAugment(), ToTensor(), normalize()]),
             'valid': Compose([resize, ToTensor(), normalize()]),

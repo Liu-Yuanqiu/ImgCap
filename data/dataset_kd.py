@@ -88,7 +88,7 @@ class PairedCollator(DictionaryCollator):
         return b
        
 class PairedDataset:
-    def __init__(self, examples, transform, use_cache, vocab_size):
+    def __init__(self, examples, transform, use_cache, vocab_size, stop_words):
         self.examples = examples
         self.transform = transform
         self.use_cache = use_cache
@@ -97,7 +97,7 @@ class PairedDataset:
         self.kd_score = 1
         self.gt_score = 1
 
-        self.ex_word = [1647, 3816, 8196, 1506, 8424, 3161, 7915, 4592, 9271, 2029]
+        self.stop_words = stop_words
 
     def __getitem__(self, index):
         id = self.examples[index]['id']
@@ -108,20 +108,6 @@ class PairedDataset:
         token_gt = self.examples[index]['token_gt']
 
         max_len = max( max([len(x) for x in token_gt]), len(token_kd) )
-        # label1 = np.zeros((self.vocab_size), dtype=np.float32)
-        # for i in range(max_len):
-        #     for j in range(len(token_gt)):
-        #         if i >= len(token_gt[j]):
-        #             pass
-        #         else:
-        #             wid = token_gt[j][i]
-        #             if wid not in [0, 1, 2, 3]:
-        #                 label1[wid] += 1
-        #             else:
-        #                 pass
-        # label = label1.argsort()[-20:][::-1]
-        # mask = label1[label] == 1
-        # label[mask] = 1
         label = np.zeros((self.vocab_size), dtype=np.float32)
         for i in range(max_len):
             for j in range(len(token_gt)):
@@ -129,7 +115,7 @@ class PairedDataset:
                     pass
                 else:
                     wid = token_gt[j][i]
-                    if wid not in [0, 1, 2, 3] and wid not in self.ex_word:
+                    if wid not in [0, 1, 2, 3] and wid not in self.stop_words:
                         label[wid] += 1
                     else:
                         pass
@@ -154,7 +140,6 @@ class PairedDataset:
                     label_out[i][wid] = self.kd_score
 
         if self.use_cache:
-            # filepath = filepath.replace("swin_dert_grid", "swin_dert_region")
             with np.load(filepath, allow_pickle=True) as data_grid:
                 grid = data_grid['grid']
                 grid = np.array(grid).astype('float32')
@@ -225,18 +210,31 @@ class COCO_KD:
             json.dump(self.train_samples, open(os.path.join(root_path, "cached_coco_train.json"), "w"))
             json.dump(self.val_samples, open(os.path.join(root_path, "cached_coco_val.json"), "w"))
             json.dump(self.test_samples, open(os.path.join(root_path, "cached_coco_test.json"), "w"))
-            
-def build_coco_dataloaders(config=None, device='cpu'):
-    transform = get_transform(config.dataset.transform)
 
-    use_cache = config.dataset.use_cache
-    text_field = TextField(vocab_path=config.dataset.vocab_path)
-    coco = COCO_KD(text_field, config.dataset.root_path, use_cache)
+def get_stop_words(text_field, stop_word_path):
+    words = load_txt(stop_word_path)
+    stop_word_ids = []
+    for w in words:
+        stop_word_ids.append(text_field.vocab.stoi[w])
+    return stop_word_ids
+    
+def build_coco_dataloaders(use_cache, data_path, batch_size, num_workers, device='cpu'):
+    cfg_transform = {
+        "size": [384, 640],
+        "resize_name": "maxwh", # normal, minmax, maxwh; maxwh is computationally friendly for training
+        "randaug": True
+        }
+    transform = get_transform(cfg_transform)
+    use_cache = use_cache
+    text_field = TextField(vocab_path=os.path.join(data_path, "txt", "coco_vocabulary.txt"))
+    coco = COCO_KD(text_field, data_path, use_cache)
 
+    stop_words = get_stop_words(text_field, os.path.join(data_path, "txt", "english"))
+    # print(stop_words)
     datasets = {
-        'train': PairedDataset(coco.train_samples, transform['train'], use_cache, len(text_field.vocab)),
-        'valid': PairedDataset(coco.val_samples, transform['valid'], use_cache, len(text_field.vocab)),
-        'test': PairedDataset(coco.test_samples, transform['valid'], use_cache, len(text_field.vocab)),
+        'train': PairedDataset(coco.train_samples, transform['train'], use_cache, len(text_field.vocab), stop_words),
+        'valid': PairedDataset(coco.val_samples, transform['valid'], use_cache, len(text_field.vocab), stop_words),
+        'test': PairedDataset(coco.test_samples, transform['valid'], use_cache, len(text_field.vocab), stop_words),
     }
     # label = datasets['train'].__getitem__(120)[6]
     # for i in range(label.shape[0]):
@@ -249,13 +247,13 @@ def build_coco_dataloaders(config=None, device='cpu'):
         'test': PairedCollator(use_cache, device=device),
     }
 
-    batch_size = config.optimizer.batch_size
+    batch_size = batch_size
     dataloaders = {}
     dataloaders['train'] = DataLoader(
         datasets['train'],
         batch_size=batch_size,
         collate_fn=collators['train'],
-        num_workers=config.optimizer.num_workers,
+        num_workers=num_workers,
         shuffle=True,
         pin_memory=True
     )
@@ -263,14 +261,14 @@ def build_coco_dataloaders(config=None, device='cpu'):
         datasets['valid'],
         batch_size=batch_size,
         collate_fn=collators['valid'],
-        num_workers=config.optimizer.num_workers,
+        num_workers=num_workers,
         shuffle=False,
         pin_memory=True
     )
     dataloaders['test'] = DataLoader(
         datasets['test'],
         batch_size=batch_size,
-        num_workers=config.optimizer.num_workers,
+        num_workers=num_workers,
         collate_fn=collators['test'],
         shuffle=False,
         pin_memory=True

@@ -20,7 +20,7 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+
 test = False
 random.seed(1234)
 torch.manual_seed(1234)
@@ -35,7 +35,9 @@ def evaluate_loss(model, dataloader, loss_fn, text_field):
         with torch.no_grad():
             for it, batch in enumerate(dataloader):
                 image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
-                
+                samples['grid'] = samples['grid'].to(device)
+                samples['mask'] = samples['mask'].to(device)
+                captions = captions.to(device)
                 out = model(samples, captions)
                 captions = captions[:, 1:].contiguous()
                 out = out[:, :-1].contiguous()
@@ -61,6 +63,9 @@ def evaluate_metrics(model, dataloader, text_field):
     with tqdm(desc='Epoch %d - evaluation' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
             image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
+            samples['grid'] = samples['grid'].to(device)
+            samples['mask'] = samples['mask'].to(device)
+            # captions = captions.to(device)
             with torch.no_grad():
                 out, _ = model.beam_search(samples, 20, text_field.vocab.stoi['<eos>'], 5, out_size=1)
             caps_gen = text_field.decode(out, join_words=False)
@@ -84,7 +89,9 @@ def train_xe(model, dataloader, optim, text_field):
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
             image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
-
+            samples['grid'] = samples['grid'].to(device)
+            samples['mask'] = samples['mask'].to(device)
+            captions = captions.to(device)
             out = model(samples, captions)
             optim.zero_grad()
             captions_gt = captions[:, 1:].contiguous()
@@ -120,6 +127,9 @@ def train_scst(model, dataloader, optim, cider, text_field):
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
             image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
+            samples['grid'] = samples['grid'].to(device)
+            samples['mask'] = samples['mask'].to(device)
+            # captions = captions.to(device)
             outs, log_probs = model.beam_search(samples, seq_len, text_field.vocab.stoi['<eos>'],
                                                 beam_size, out_size=beam_size)
             optim.zero_grad()
@@ -154,18 +164,19 @@ def train_scst(model, dataloader, optim, cider, text_field):
 
 
 if __name__ == '__main__':
-    multiprocessing.set_start_method('spawn')
-    device = torch.device('cuda')
     args = OmegaConf.load('configs/transformer.yaml')
     print(args)
-
-    writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.exp_name))
+    os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+    device = torch.device('cuda')
+    multiprocessing.set_start_method('spawn')
+    
+    writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.exp_mode, args.exp_name))
 
     dataloaders, text_field = build_coco_dataloaders(args, device)
     cider_train = Cider()
 
     # Model and dataloaders
-    if args.mode == 'transformer':
+    if args.exp_mode == 'transformer':
         if args.dataset.use_cache:
             detector = None
         else:
@@ -180,14 +191,13 @@ if __name__ == '__main__':
 
     def lambda_lr(s):
         base_lr = 0.0001
-        print("s:", s)
-        if s == 0:
-            lr = base_lr / 2
-        # elif s <= 3:
-        #     lr = base_lr * s / 4
-        elif s <= 5:
+        # if s == 0:
+            # lr = base_lr / 4
+        if s < 3:
+            lr = base_lr * (s+1) / 4
+        elif s <= 8:
             lr = base_lr
-        elif s <= 10:
+        elif s <= 12:
             lr = base_lr * 0.2
         else:
             lr = base_lr * 0.2 * 0.2
@@ -196,9 +206,9 @@ if __name__ == '__main__':
     def lambda_lr_rl(s):
         base_lr = 5e-6
         print("s:", s)
-        if s <= 29:
+        if s <= 100:
             lr = base_lr
-        elif s <= 31:
+        elif s <= 200:
             lr = base_lr * 0.2
         else:
             lr = base_lr * 0.2 * 0.2
@@ -214,7 +224,7 @@ if __name__ == '__main__':
     patience = 0
     start_epoch = 0
 
-    args.model_path = os.path.join("./ckpts", args.exp_name)
+    args.model_path = os.path.join("./ckpts", args.exp_mode, args.exp_name)
     if args.resume_last or args.resume_best:
         if args.resume_last:
             fname = os.path.join(args.model_path, '%s_last.pth' % args.exp_name)
@@ -240,6 +250,7 @@ if __name__ == '__main__':
 
     print("Training starts")
     for e in range(start_epoch, start_epoch + 100):
+        print("Epoch: %d, Learning Rate: %f" % (e, optim.param_groups[0]['lr']))
         if not use_rl:
             train_loss = train_xe(model, dataloaders['train'], optim, text_field)
             writer.add_scalar('data/train_loss', train_loss, e)

@@ -1,5 +1,5 @@
-rank: "1"
-exp_name: 'eed_pe_gen20_sorted_mse_newwordemb'
+rank: "2"
+exp_name: '0604'
 exp_mode: 's2s'
 resume_last: false
 resume_best: false

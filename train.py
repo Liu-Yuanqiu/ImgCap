@@ -3,10 +3,11 @@ from data import ImageDetectionsField, TextField, RawField, PixelField
 from data import COCO, DataLoader
 import evaluation
 from evaluation import PTBTokenizer, Cider
-from models.transformer import TransformerEncoder, TransformerDecoder, ScaledDotProductAttention, Transformer
-from models.transformer_lrp import TransformerEncoder_LRP, TransformerDecoder_LRP, ScaledDotProductAttention_LRP, Transformer_LRP
-from models.difnet import Difnet, DifnetEncoder, DifnetDecoder
-from models.difnet_lrp import Difnet_LRP, DifnetEncoder_LRP
+from models.attention import ScaledDotProductAttention
+from models.transformer import TransformerEncoder, TransformerDecoder, Transformer
+# from models.transformer_lrp import TransformerEncoder_LRP, TransformerDecoder_LRP, ScaledDotProductAttention_LRP, Transformer_LRP
+# from models.difnet import Difnet, DifnetEncoder, DifnetDecoder
+# from models.difnet_lrp import Difnet_LRP, DifnetEncoder_LRP
 
 import torch
 from torch.optim import Adam
@@ -205,18 +206,18 @@ if __name__ == '__main__':
         encoder = TransformerEncoder(3, 0, attention_module=ScaledDotProductAttention)
         decoder = TransformerDecoder(len(text_field.vocab), 54, 3, text_field.vocab.stoi['<pad>'])
         model = Transformer(text_field.vocab.stoi['<bos>'], encoder, decoder).to(device)
-    if args.mode == 'base_lrp':
-        encoder = TransformerEncoder_LRP(3, 0, attention_module=ScaledDotProductAttention_LRP)
-        decoder = TransformerDecoder_LRP(len(text_field.vocab), 54, 3, text_field.vocab.stoi['<pad>'])
-        model = Transformer_LRP(text_field.vocab.stoi['<bos>'], encoder, decoder).to(device)
-    if args.mode == 'difnet':
-        encoder = DifnetEncoder(1, 2, 3, 0, attention_module=ScaledDotProductAttention)
-        decoder = DifnetDecoder(len(text_field.vocab), 54, 3, text_field.vocab.stoi['<pad>'])
-        model = Difnet(text_field.vocab.stoi['<bos>'], encoder, decoder).to(device)
-    if args.mode == 'difnet_lrp':
-        encoder = DifnetEncoder_LRP(3, 0, attention_module=ScaledDotProductAttention_LRP)
-        decoder = TransformerDecoder_LRP(len(text_field.vocab), 54, 3, text_field.vocab.stoi['<pad>'])
-        model = Difnet_LRP(text_field.vocab.stoi['<bos>'], encoder, decoder).to(device)
+    # if args.mode == 'base_lrp':
+    #     encoder = TransformerEncoder_LRP(3, 0, attention_module=ScaledDotProductAttention_LRP)
+    #     decoder = TransformerDecoder_LRP(len(text_field.vocab), 54, 3, text_field.vocab.stoi['<pad>'])
+    #     model = Transformer_LRP(text_field.vocab.stoi['<bos>'], encoder, decoder).to(device)
+    # if args.mode == 'difnet':
+    #     encoder = DifnetEncoder(1, 2, 3, 0, attention_module=ScaledDotProductAttention)
+    #     decoder = DifnetDecoder(len(text_field.vocab), 54, 3, text_field.vocab.stoi['<pad>'])
+    #     model = Difnet(text_field.vocab.stoi['<bos>'], encoder, decoder).to(device)
+    # if args.mode == 'difnet_lrp':
+    #     encoder = DifnetEncoder_LRP(3, 0, attention_module=ScaledDotProductAttention_LRP)
+    #     decoder = TransformerDecoder_LRP(len(text_field.vocab), 54, 3, text_field.vocab.stoi['<pad>'])
+    #     model = Difnet_LRP(text_field.vocab.stoi['<bos>'], encoder, decoder).to(device)
 
     dict_dataset_train = train_dataset.image_dictionary({'image': image_field, 'text': RawField(), 'pixel': pixel_field})
     ref_caps_train = list(train_dataset.text)

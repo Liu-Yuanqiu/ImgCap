@@ -1,11 +1,11 @@
 exp_name: 'transformer'
-mode: 'transformer'
-resume_last: true
+exp_mode: 'transformer'
+resume_last: false
 resume_best: false
-logs_folder: './ckpts/logs/'
+logs_folder: './logs/'
 
 optimizer:
-  batch_size: 48
+  batch_size: 32
   num_workers: 8
 
 dataset:
