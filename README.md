@@ -29,19 +29,18 @@ Run `python train.py` using the following arguments:
 - tm_gt20_ce: 基础版本，使用真实20单词，交叉熵监督训练
 ```
 python train_s2s.py --rank 0 --exp_name tm_gt20_ce --use_loss_ce
+python train_s2s.py --rank 0 --exp_name tm_gt20_ce --use_loss_ce --resume_best --epoch1 35
+python train_s2s.py --rank 0 --exp_name tm_gt20_ce --use_loss_ce --resume_best --epoch1 35 --epoch2 37
 ```
 - tm_gt20_ce_entropy：在基础版本上增加熵损失
 ```
-python train_s2s.py --rank 1 --exp_name tm_gt20_ce_entropy --use_loss_ce --use_loss_entropy
+python train_s2s.py --rank 2 --exp_name tm_gt20_ce_entropy --use_loss_ce --use_loss_entropy
+python train_s2s.py --rank 2 --exp_name tm_gt20_ce_entropy --use_loss_ce --use_loss_entropy --resume_best --epoch1 31
+python train_s2s.py --rank 2 --exp_name tm_gt20_ce_entropy --use_loss_ce --use_loss_entropy --resume_best --epoch1 31 --epoch2 39
 ```
-- tm_gt20_ce_l2：在基础版本上增加l2损失，控制word_emb靠近0
-```
-python train_s2s.py --rank 0 --exp_name tm_gt20_ce --use_loss_ce --use_loss_kl
-```
-- tm_gt20_ce_l2_entropy：全量版本
-```
-python train_s2s.py --rank 0 --exp_name tm_gt20_ce --use_loss_ce --use_loss_kl --use_loss_entropy
-```
+### S2S
+- eed_ce_w_en_kl: 基础版本，使用真实20单词，交叉熵监督训练
+python train_s2s.py --rank 2 --exp_name eed_ce_w_en_kl --use_loss_word --use_loss_ce --use_loss_entropy --use_loss_kl
 ### s2s
 - ed: 使用三个模型的蒸馏结果训练。三层编码器图像特征，三层编码器生成单词，六层解码器生成最终描述。label使用蒸馏后句子和真实句子所有单词，有则为1，没有为0。交叉熵损失。
 

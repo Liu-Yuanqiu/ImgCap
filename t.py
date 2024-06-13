@@ -4,7 +4,7 @@ from evaluation import Cider
 from data.dataset_kd import build_coco_dataloaders
 from models.detector import build_detector
 from models.s2s.transformer_word import Transformer
-from models.losses import FocalLossWithLogitsNegLoss, WeightedFocalLossWithLogitsNegLoss
+# from models.losses import FocalLossWithLogitsNegLoss, WeightedFocalLossWithLogitsNegLoss
 from models.metric import MultiLabelAccuracy, mAPMeter
 from pycocotools.coco import COCO
 import torch
@@ -59,23 +59,27 @@ def normal_word():
 
 if __name__ == '__main__':
     # normal_word()
-    args = OmegaConf.load('configs/s2s_word.yaml')
-    print(args)
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.rank
-    device = torch.device('cuda')
-    multiprocessing.set_start_method('spawn')
+    # args = OmegaConf.load('configs/s2s_word.yaml')
+    # print(args)
+    # os.environ["CUDA_VISIBLE_DEVICES"] = args.rank
+    # device = torch.device('cuda')
+    # multiprocessing.set_start_method('spawn')
 
-    writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.mode, args.exp_name))
+    # writer = SummaryWriter(log_dir=os.path.join(args.logs_folder, args.mode, args.exp_name))
 
-    dataloaders, text_field = build_coco_dataloaders(args, device)
+    # dataloaders, text_field = build_coco_dataloaders(args, device)
     
-    normal_w = ['a', 'on', 'of', 'the', 'in', 'with', 'and', 'is', 'man', \
-                'to', 'an', 'two', 'at', 'are', 'people', \
-                'next', 'woman', 'that',  'some', 'large', \
-                'person', 'down',  'top', 'up',  'small', 'near', \
-                'his',  'front', 'by', 'has', 'while',  'it.', 'there',  \
-                'three', 'for',  'it', 'boy', 'men', 'other']
-    wid = []
-    for w in normal_w:
-        wid.append(text_field.vocab.stoi[w])
-    print(wid)
+    # normal_w = ['a', 'on', 'of', 'the', 'in', 'with', 'and', 'is', 'man', \
+    #             'to', 'an', 'two', 'at', 'are', 'people', \
+    #             'next', 'woman', 'that',  'some', 'large', \
+    #             'person', 'down',  'top', 'up',  'small', 'near', \
+    #             'his',  'front', 'by', 'has', 'while',  'it.', 'there',  \
+    #             'three', 'for',  'it', 'boy', 'men', 'other']
+    # wid = []
+    # for w in normal_w:
+    #     wid.append(text_field.vocab.stoi[w])
+    # print(wid)
+    fname = os.path.join("./ckpts", "s2s", "test", "s2s_best.pth")
+    data = torch.load(fname)['state_dict']
+    for k in data:
+        print(k)

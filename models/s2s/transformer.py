@@ -4,13 +4,14 @@ from torch import nn
 from torch.nn import NLLLoss
 from torch.nn import functional as F
 from torch.distributions import Categorical
+from einops import rearrange, reduce
 from models.containers import ModuleList
 from models.attention import MultiHeadAttention, PositionWiseFeedForward, sinusoid_encoding_table
 
 class Transformer(nn.Module):
     def __init__(self, feat_dim, vocab_size, padding_idx, topk, \
-                teacher_model=None, use_loss_word=False, use_loss_ce=True, \
-                use_loss_l2=False, use_loss_entropy=False, use_loss_kl=False, \
+                use_loss_word=False, use_loss_ce=True, \
+                use_loss_entropy=False, \
                 N_en=3, N_wo=3, N_de=3, \
                 d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, \
                 identity_map_reordering=False, attention_module=None, \
@@ -46,19 +47,18 @@ class Transformer(nn.Module):
                                                 for _ in range(N_de)])
         self.word_emb = WordEmbedding(vocab_size, d_model, padding_idx)
         self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
+        self.pos_emb_freeze = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=True)
         self.vocab_size = vocab_size
         self.topk = topk
-        self.teacher_model = teacher_model
         self.use_loss_word = use_loss_word
         self.use_loss_ce = use_loss_ce
-        self.use_loss_l2 = use_loss_l2
+        self.label_smoothing = 0.1
+        self.confidence = 1.0 - self.label_smoothing
         self.use_loss_entropy = use_loss_entropy
-        self.use_loss_kl = use_loss_kl
         self.bos_idx = 2
         
         self.ce_loss = nn.NLLLoss(ignore_index=padding_idx, reduction='none')
-        self.kl_loss = nn.KLDivLoss()
-
+        self.kl_loss = nn.KLDivLoss(reduction="none")
         self.init_weights()
     
     def init_weights(self):
@@ -74,75 +74,62 @@ class Transformer(nn.Module):
         for l in self.encoder:
             enc_img = l(enc_img, enc_img, enc_img, gri_mask)
 
-        if self.teacher_model is None:
+        losses = {}
+        if self.use_loss_word:
             enc_txt = self.img2word(enc_img)
+            enc_txt = self.word_emb.toText(enc_txt)
             for l in self.encoderw:
                 enc_txt = l(enc_txt, enc_txt, enc_img, gri_mask)
-            enc_txt = enc_txt[:, :self.topk]
-            outw = self.word_emb.toText(enc_txt)
+            outw = enc_txt[:, :self.topk]
+
+            _, logit_w = self.word_emb.bit_fc(outw)
+            _, targets = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
+            targets = self.word_emb.get_bit_repr(targets)
+            loss_w = F.mse_loss(logit_w, targets)
+            losses.update({"word": loss_w})
         else:
             _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
-            outw = self.word_emb.embed(gt_topk)
+            outw = self.word_emb.id_embed(gt_topk)
 
-        # mse_loss = self.mse_loss(out1, label_emb)
-        # enc_txt_out = enc_img[:, 0]
-        # enc_txt_out = self.img2word(enc_txt_out)
-        # word_logit = self.fc_word(enc_txt_out)
-
-        # with torch.no_grad():
-        #     offline_logit = torch.nn.functional.sigmoid(word_logit.detach())
-        #     prob, pred_topk = offline_logit.topk(self.topk, dim=1, largest=True, sorted=True)
-        # if labels is not None and gen_tag_ratio is not None:
-        #     batch_len = int((1 - gen_tag_ratio) * self.topk)
-        #     _, gt_topk = torch.topk(labels, batch_len, dim=1, largest=True, sorted=True)
-        #     pred_topk = pred_topk[:, batch_len:]
-        #     pred_topk = torch.cat([gt_topk, pred_topk], dim=1)
-            # pred_topk = pred_topk[:, :self.topk]
-        
         pos_indx = torch.arange(1, self.topk + 1, device='cuda').view(1, -1)
         out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
         for l in self.decoder1:
             out = l(out, outw, enc_img, gri_mask)
         
-        self_att_weight = torch.log(torch.tensor(2.)) - self.entropy(out)
-        self_att_weight = self_att_weight.unsqueeze(1).unsqueeze(1)
-        for l in self.decoder2:
-            out = l(out, out, enc_img, gri_mask, self_att_weight=self_att_weight)
-        outw = self.word_emb.fc(outw)
-        outs = self.word_emb.fc(out)
-        
-        # loss
-        loss = {}
-        # word predict
-        if self.use_loss_word:
-            prob, target = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
-            mask = (prob > 0).float().view(-1)
-            logit_w = F.log_softmax(outw, dim=-1)
-            loss_w = self.ce_loss(logit_w.view(-1, self.vocab_size), target.view(-1))
-            loss_w = torch.sum(loss_w*mask, -1) / torch.sum(mask, -1)
-            loss['word'] = loss_w
         # ce
         if self.use_loss_ce:
-            logit = F.log_softmax(outs, dim=-1)
-            loss_ce = self.ce_loss(logit.view(-1, self.vocab_size), tokens_kd.view(-1))
-            loss_ce = loss_ce.mean()
-            loss['ce'] = loss_ce
-        # l2
-        if self.use_loss_l2:
-            loss_l2 = self.l2_penalty(self.word_emb.weight)
-            loss['l2'] = loss_l2
+            logit_d1 = self.word_emb.fc(out)
+            logP = F.log_softmax(logit_d1.view(-1, logit_d1.shape[-1]), dim=-1) 
+            assign_seq = tokens_kd.view(-1)
+            assign_seq[assign_seq < 0] = 0
+
+            size = logP.size(1)
+            true_dist = logP.clone()
+            true_dist.fill_(self.label_smoothing / (size - 1))
+            true_dist.scatter_(1, assign_seq.data.unsqueeze(1), self.confidence)
+            loss_s = self.kl_loss(logP, true_dist).sum(1).mean()
+            losses.update({"seq": loss_s})
+
+        # out = out + self.pos_emb_freeze(pos_indx)
+        # self_att_weight = torch.log(torch.tensor(2.)) - self.entropy(out)
+        # self_att_weight = self_att_weight.unsqueeze(1).unsqueeze(1)
+        # for l in self.decoder2:
+        #     out = l(out, out, enc_img, gri_mask, self_att_weight=self_att_weight)
+        # # ce
+        # if self.use_loss_ce:
+        #     out_d2 = self.word_emb.fc(out)
+        #     logit_d2 = F.log_softmax(out_d2, dim=-1)
+        #     loss_ce = self.ce_loss(logit_d2.view(-1, self.vocab_size), tokens_kd.view(-1))
+        #     loss_ce = loss_ce.mean()
+        #     loss['ce2'] = loss_ce
+        
+
         # entropy
         if self.use_loss_entropy:
             loss_e = self.entropy(out)
-            loss['entropy'] = loss_e.mean()
-        # kl
-        if self.teacher_model is not None and self.use_loss_kl:
-            logit_tm = self.teacher_model.infer(images)
-            logit_tm = torch.exp(logit_tm)
-            loss_kl = self.kl_loss(logit, logit_tm)
-            loss['loss_kl'] = loss_kl
-        return loss
-    
+            losses.update({"entropy": loss_e.mean()})
+        return losses   
+
     def infer(self, images, labels=None):
         gri_feat, gri_mask = images['grid'], images['mask']
         gri_feat = self.image_emb(gri_feat)
@@ -151,28 +138,27 @@ class Transformer(nn.Module):
         for l in self.encoder:
             enc_img = l(enc_img, enc_img, enc_img, gri_mask)
 
-        if self.teacher_model is None:
+        if labels is None:
             enc_txt = self.img2word(enc_img)
+            enc_txt = self.word_emb.toText(enc_txt)
             for l in self.encoderw:
                 enc_txt = l(enc_txt, enc_txt, enc_img, gri_mask)
-            enc_txt = enc_txt[:, :self.topk]
-            outw = self.word_emb.toText(enc_txt)
+            outw = enc_txt[:, :self.topk]
         else:
             _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
-            outw = self.word_emb.embed(gt_topk)
+            outw = self.word_emb.id_embed(gt_topk)
         
         pos_indx = torch.arange(1, self.topk + 1, device='cuda').view(1, -1)
         out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
         for l in self.decoder1:
             out = l(out, outw, enc_img, gri_mask)
         
-        self_att_weight = torch.log(torch.tensor(2.)) - self.entropy(out)
-        self_att_weight = self_att_weight.unsqueeze(1).unsqueeze(1)
-        for l in self.decoder2:
-            out = l(out, out, enc_img, gri_mask, self_att_weight=self_att_weight)
-        outw = self.word_emb.fc(outw)
+        # self_att_weight = torch.log(torch.tensor(2.)) - self.entropy(out)
+        # self_att_weight = self_att_weight.unsqueeze(1).unsqueeze(1)
+        # for l in self.decoder2:
+        #     out = l(out, out, enc_img, gri_mask, self_att_weight=self_att_weight)
         out = self.word_emb.fc(out)
-        return F.log_softmax(outw, dim=-1), F.log_softmax(out, dim=-1)
+        return F.log_softmax(out, dim=-1)
     
     def entropy(self, out):
         logit = torch.softmax(self.word_emb.fc(out), -1)
@@ -198,21 +184,56 @@ class WordEmbedding(nn.Module):
         self.dim = dim
         self.padding_idx = padding_idx
         self.weight = nn.Parameter(torch.randn(self.vocab_size, self.dim))
-        self.norm = nn.LayerNorm(dim)
-        self.dropout = nn.Dropout(0.1)
+        self.bit_dim = int(np.ceil(np.log2(vocab_size)))
+        self.weight_bit = nn.Parameter(torch.randn(self.bit_dim, self.dim))
+        vocab_inds = torch.arange(0, vocab_size).long().view(1, vocab_size, 1, 1)
+        self.vocab_bit_buffer = self.decimal_to_bits(vocab_inds, vocab_size=vocab_size, bits=self.bit_dim).cuda()
         if self.padding_idx is not None:
             with torch.no_grad():
                 self.weight[self.padding_idx].fill_(0)
     
-    def embed(self, tenosr):
-        return torch.matmul(F.one_hot(tenosr, num_classes=self.vocab_size).type(torch.float32), self.weight)
+    def id_embed(self, input_ids):
+        return torch.matmul(F.one_hot(input_ids, num_classes=self.vocab_size).type(torch.float32), self.weight)
+    
+    def bit_embed(self, input_ids):
+        input_ids_bit = self.get_bit_repr(input_ids)
+        return torch.matmul(input_ids_bit, self.weight_bit)
     
     def fc(self, tensor):
         return torch.matmul(tensor, self.weight.t())
     
+    def bit_fc(self, tensor):
+        logit = torch.matmul(tensor, self.weight.t())
+        prob = F.softmax(logit, -1)
+        # prob = F.sigmoid(logit)
+        logit_w = torch.matmul(prob, self.vocab_bit_buffer.expand(prob.shape[0], -1, -1))
+        return logit, logit_w
+    
     def toText(self, tensor):
         prob = F.softmax(torch.matmul(tensor, self.weight.t()), -1)
-        return self.norm(torch.matmul(prob, self.weight))
+        return torch.matmul(prob, self.weight)
+
+    def get_bit_repr(self, input_ids):
+        batch_size, seq_length = input_ids.shape
+        input_ids = input_ids.view(batch_size, seq_length, 1, 1) # the same as img: batch_size x channel x height x weight
+        input_ids_bit = self.decimal_to_bits(input_ids, vocab_size=self.vocab_size, bits=self.bit_dim)
+        return input_ids_bit
+    
+    def decimal_to_bits(self, x, vocab_size, bits):
+        """ expects image tensor ranging from 0 to 1, outputs bit tensor ranging from -1 to 1 """
+        device = x.device
+
+        x = x.clamp(0, vocab_size-1)
+
+        mask = 2 ** torch.arange(bits - 1, -1, -1, device = device)
+        mask = rearrange(mask, 'd -> d 1 1')
+        x = rearrange(x, 'b c h w -> b c 1 h w')
+
+        bits = ((x & mask) != 0).float()
+        # bits = rearrange(bits, 'b c d h w -> b (c d) h w')
+        bits = bits.squeeze(-1).squeeze(-1) # batch_size x seq_length x bits x 1 x 1 -> batch_size x seq_length x bits
+        bits = bits * 2 - 1
+        return bits
 
 
 class EncoderLayer(nn.Module):

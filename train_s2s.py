@@ -73,10 +73,7 @@ def evaluate_metrics(model, dataloader, text_field):
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             with torch.no_grad():
-                if teacher_model is None:
-                    _, logit = model.infer(samples, labels)
-                else:
-                    _, logit = model.infer(samples)
+                logit = model.infer(samples)
             
             _, out = torch.max(logit, -1)
             caps_gen = text_field.decode(out, join_words=False, deduplication=True)
@@ -283,7 +280,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_loss_l2', action='store_true')
     parser.add_argument('--use_loss_entropy', action='store_true')
     parser.add_argument('--use_loss_kl', action='store_true')
-    parser.add_argument('--teacher_model_path', type=str, default='/s2s/pe_gt20_sorted_entropy/s2s_best.pth')
+    parser.add_argument('--teacher_model_path', type=str, default='/s2s/tm_gt20_ce_entropy/s2s_best.pth')
     args = parser.parse_args()
     print(args)
     os.environ["CUDA_VISIBLE_DEVICES"] = args.rank
@@ -296,29 +293,11 @@ if __name__ == '__main__':
     cider_train = Cider()
     print(text_field.vocab.stoi['<bos>'])
     print(text_field.vocab.stoi['<pad>'])
-    if args.use_loss_kl:
-        fname = os.path.join('./ckpts', args.teacher_model_path)
-        if os.path.exists(fname):
-            teacher_model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.seq_len, \
-                        N_en=args.layer_num, N_wo=args.layer_num, N_de=args.layer_num).to(device)
-            data = torch.load(fname)
-            torch.set_rng_state(data['torch_rng_state'])
-            torch.cuda.set_rng_state(data['cuda_rng_state'])
-            np.random.set_state(data['numpy_rng_state'])
-            random.setstate(data['random_rng_state'])
-            teacher_model.load_state_dict(data['state_dict'], strict=False)
-            print('Resuming teacher model from %s and best cider %f' % (
-                fname, data['best_cider']))
-            for n, p in teacher_model.named_parameters():
-                p.requires_grad = False
-        else:
-            teacher_model = None
-    else:
-        teacher_model = None
+
     model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.seq_len, \
-                        N_en=args.layer_num, N_wo=args.layer_num, N_de=args.layer_num, teacher_model=teacher_model, \
-                        use_loss_word=args.use_loss_word, use_loss_ce=args.use_loss_ce, use_loss_l2=args.use_loss_l2, \
-                        use_loss_entropy=args.use_loss_entropy, use_loss_kl=args.use_loss_kl).to(device)
+                        N_en=args.layer_num, N_wo=args.layer_num, N_de=args.layer_num, \
+                        use_loss_word=args.use_loss_word, use_loss_ce=args.use_loss_ce, \
+                        use_loss_entropy=args.use_loss_entropy).to(device)
 
 
     def lambda_lr(s):
