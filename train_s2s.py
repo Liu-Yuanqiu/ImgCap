@@ -91,30 +91,32 @@ def evaluate_metrics(model, dataloader, text_field):
 def train_xe(model, dataloader, optim, text_field):
     # Training with cross-entropy
     model.train()
+    loop = 10
     running_loss = .0
-    with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
+    with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)*loop) as pbar:
         for it, batch in enumerate(dataloader):
             image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
             samples['grid'] = samples['grid'].to(device)
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             tokens_kd = tokens_kd.to(device)
-            losses = model(samples, labels, tokens_kd)
-            # print(losses)
-            optim.zero_grad()
-            loss = 0
-            for v in losses.values():
-                loss += v
-            loss.backward()
+            for i in range(loop):
+                losses = model(samples, labels, tokens_kd)
+                # print(losses)
+                optim.zero_grad()
+                loss = 0
+                for v in losses.values():
+                    loss += v
+                loss.backward()
 
-            optim.step()
-            this_loss = loss.item()
-            running_loss += this_loss
-            losses_info = {}
-            for k in losses:
-                losses_info[k] = losses[k].item()
-            pbar.set_postfix(loss=running_loss / (it + 1), losses=losses_info)
-            pbar.update()
+                optim.step()
+                this_loss = loss.item()
+                running_loss += this_loss
+                losses_info = {}
+                for k in losses:
+                    losses_info[k] = losses[k].item()
+                pbar.set_postfix(loss=running_loss / (it + 1), losses=losses_info)
+                pbar.update()
 
             if args.test:
                 break

@@ -1,3 +1,4 @@
+import math
 import torch
 import numpy as np
 from torch import nn
@@ -28,10 +29,11 @@ class Transformer(nn.Module):
                                                        attention_module_kwargs=attention_module_kwargs) 
                                                        for _ in range(N_en)])
         self.img2word = nn.Linear(d_model, d_model)
-        self.encoderw = ModuleList([EncoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
-                                                       identity_map_reordering=identity_map_reordering, 
-                                                       attention_module=attention_module, 
-                                                       attention_module_kwargs=attention_module_kwargs) 
+        self.encoderw = ModuleList([DiffusionDecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
+                                                        self_att_module=attention_module, 
+                                                        enc_att_module=attention_module, 
+                                                        self_att_module_kwargs=attention_module_kwargs, 
+                                                        enc_att_module_kwargs=attention_module_kwargs) 
                                                        for _ in range(N_wo)])    
         self.decoder1 = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
                                                 self_att_module=attention_module, 
@@ -50,6 +52,7 @@ class Transformer(nn.Module):
         self.pos_emb_freeze = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=True)
         self.vocab_size = vocab_size
         self.topk = topk
+        self.dim = d_model
         self.use_loss_word = use_loss_word
         self.use_loss_ce = use_loss_ce
         self.label_smoothing = 0.1
@@ -60,36 +63,87 @@ class Transformer(nn.Module):
         self.ce_loss = nn.NLLLoss(ignore_index=padding_idx, reduction='none')
         self.kl_loss = nn.KLDivLoss(reduction="none")
         self.init_weights()
+
+        self.num_timesteps = 100
+        betas = sigmoid_beta_schedule(self.num_timesteps) # shape:[num_timesteps,]
+        alphas = 1. - betas
+        alphas_cumprod = torch.cumprod(alphas, dim=0)
+        alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value = 1.)
+        self.sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
+        self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1. - alphas_cumprod)
+        self.posterior_mean_coef1 = betas * torch.sqrt(alphas_cumprod_prev) / (1. - alphas_cumprod)
+        self.posterior_mean_coef2 = (1. - alphas_cumprod_prev) * torch.sqrt(alphas) / (1. - alphas_cumprod)
+        posterior_variance = betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)
+        self.posterior_log_variance_clipped = torch.log(posterior_variance.clamp(min =1e-20))
+        self.timestep_emb = TimestepEmbedder(d_model)
+        self.normalize = normalize_to_neg_one_to_one
+        self.unnormalize = unnormalize_to_zero_to_one
     
     def init_weights(self):
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
-
+    
+    def predict_v(self, x_start, t, noise):
+        return (
+            extract(self.sqrt_alphas_cumprod, t, x_start.shape) * noise -
+            extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * x_start
+        )
+    
+    def q_sample(self, x_start, t, noise=None):
+        return (
+            extract(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start +
+            extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
+        )
+    
     def forward(self, images, labels, tokens_kd):
         gri_feat, gri_mask = images['grid'], images['mask']
         gri_feat = self.image_emb(gri_feat)
+
+        bs = gri_feat.shape[0]
+        device = gri_feat.device
 
         enc_img = gri_feat
         for l in self.encoder:
             enc_img = l(enc_img, enc_img, enc_img, gri_mask)
 
         losses = {}
-        if self.use_loss_word:
-            enc_txt = self.img2word(enc_img)
-            enc_txt = self.word_emb.toText(enc_txt)
-            for l in self.encoderw:
-                enc_txt = l(enc_txt, enc_txt, enc_img, gri_mask)
-            outw = enc_txt[:, :self.topk]
 
-            _, logit_w = self.word_emb.bit_fc(outw)
-            _, targets = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
-            targets = self.word_emb.get_bit_repr(targets)
-            loss_w = F.mse_loss(logit_w, targets)
-            losses.update({"word": loss_w})
-        else:
-            _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
-            outw = self.word_emb.id_embed(gt_topk)
+        ################# diffusion ####################
+        # x0
+        _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
+        x_start = self.word_emb.id_embed(gt_topk)
+        x_start = self.normalize(x_start)
+        # 
+        t = torch.randint(0, self.num_timesteps, (bs, ), device=device)
+        noise = torch.randn_like(x_start)
+        x = self.q_sample(x_start=x_start, t=t, noise=noise)
+
+        outw = x.to(torch.float32)
+        t_emb = self.timestep_emb(t)
+        for l in self.encoderw:
+            outw = l(outw, t_emb, enc_img, gri_mask)
+
+        # targets = self.predict_v(x_start, t, noise)
+        targets = x_start
+        loss_w = F.mse_loss(outw, targets)
+        losses.update({"word": loss_w})
+        ################# ######### ####################
+        # if self.use_loss_word:
+        #     enc_txt = self.img2word(enc_img)
+        #     enc_txt = self.word_emb.toText(enc_txt)
+        #     for l in self.encoderw:
+        #         enc_txt = l(enc_txt, enc_txt, enc_img, gri_mask)
+        #     outw = enc_txt[:, :self.topk]
+
+        #     _, logit_w = self.word_emb.bit_fc(outw)
+        #     _, targets = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
+        #     targets = self.word_emb.get_bit_repr(targets)
+        #     loss_w = F.mse_loss(logit_w, targets)
+        #     losses.update({"word": loss_w})
+        # else:
+        #     _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
+        #     outw = self.word_emb.id_embed(gt_topk)
 
         pos_indx = torch.arange(1, self.topk + 1, device='cuda').view(1, -1)
         out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
@@ -138,12 +192,39 @@ class Transformer(nn.Module):
         for l in self.encoder:
             enc_img = l(enc_img, enc_img, enc_img, gri_mask)
 
-        if labels is None:
-            enc_txt = self.img2word(enc_img)
-            enc_txt = self.word_emb.toText(enc_txt)
-            for l in self.encoderw:
-                enc_txt = l(enc_txt, enc_txt, enc_img, gri_mask)
-            outw = enc_txt[:, :self.topk]
+        if self.use_loss_word:
+            bs, device = enc_img.shape[0], enc_img.device
+            x = torch.randn((bs, self.topk, self.dim), device=device)
+            x_start = None
+            for t in reversed(range(0, self.num_timesteps)):
+                batched_times = torch.full((bs,), t, device = device, dtype = torch.long)
+                
+                batched_times_emb = self.timestep_emb(batched_times)
+                model_out = x
+                for l in self.encoderw:
+                    model_out = l(model_out, batched_times_emb, enc_img, gri_mask)
+                x_start = model_out
+                
+                # pred_noise = (
+                #     (extract(self.sqrt_recip_alphas_cumprod, batched_times, x.shape) * x - x_start) / \
+                #     extract(self.sqrt_recipm1_alphas_cumprod, batched_times, x.shape)
+                # )
+                x_start.clamp_(-1., 1.)
+                model_mean = (
+                    extract(self.posterior_mean_coef1, batched_times, x.shape) * x_start +
+                    extract(self.posterior_mean_coef2, batched_times, x.shape) * x
+                )
+                # posterior_variance = extract(self.posterior_variance, batched_times, x.shape)
+                model_log_variance = extract(self.posterior_log_variance_clipped, batched_times, x.shape)
+                noise = torch.randn_like(x) if t > 0 else 0. # no noise if t == 0
+                x = model_mean + (0.5 * model_log_variance).exp() * noise
+            outw = self.unnormalize(x)
+            ####################### init 0615 ###################
+            # t = torch.tensor([self.num_timesteps], dtype=torch.int32, device=enc_img.device)
+            # t_emb = self.timestep_emb(t)
+            # for l in self.encoderw:
+            #     outw = l(outw, t_emb, enc_img, gri_mask)
+            #####################################################
         else:
             _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
             outw = self.word_emb.id_embed(gt_topk)
@@ -235,7 +316,45 @@ class WordEmbedding(nn.Module):
         bits = bits * 2 - 1
         return bits
 
+class TimestepEmbedder(nn.Module):
+    """
+    Embeds scalar timesteps into vector representations.
+    """
+    def __init__(self, hidden_size, frequency_embedding_size=256):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(frequency_embedding_size, hidden_size, bias=True),
+            nn.SiLU(),
+            nn.Linear(hidden_size, hidden_size, bias=True),
+        )
+        self.frequency_embedding_size = frequency_embedding_size
 
+    @staticmethod
+    def timestep_embedding(t, dim, max_period=10000):
+        """
+        Create sinusoidal timestep embeddings.
+        :param t: a 1-D Tensor of N indices, one per batch element.
+                          These may be fractional.
+        :param dim: the dimension of the output.
+        :param max_period: controls the minimum frequency of the embeddings.
+        :return: an (N, D) Tensor of positional embeddings.
+        """
+        # https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
+        half = dim // 2
+        freqs = torch.exp(
+            -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
+        ).to(device=t.device)
+        args = t[:, None].float() * freqs[None]
+        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        if dim % 2:
+            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+        return embedding
+
+    def forward(self, t):
+        t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
+        t_emb = self.mlp(t_freq)
+        return t_emb
+    
 class EncoderLayer(nn.Module):
     def __init__(self, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, identity_map_reordering=False,
                  attention_module=None, attention_module_kwargs=None):
@@ -287,3 +406,85 @@ class DecoderLayer(nn.Module):
         ff = self.pwff(enc_att)
         out = self.lnorm3(enc_att + self.dropout3(ff))
         return out
+    
+class DiffusionDecoderLayer(nn.Module):
+    def __init__(self, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, self_att_module=None,
+                 enc_att_module=None, self_att_module_kwargs=None, enc_att_module_kwargs=None):
+        super(DiffusionDecoderLayer, self).__init__()
+        self.self_att = MultiHeadAttention(d_model, d_k, d_v, h, dropout, can_be_stateful=True,
+                                           attention_module=self_att_module,
+                                           attention_module_kwargs=self_att_module_kwargs)
+        self.enc_att = MultiHeadAttention(d_model, d_k, d_v, h, dropout, can_be_stateful=False,
+                                          attention_module=enc_att_module,
+                                          attention_module_kwargs=enc_att_module_kwargs)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.pwff = PositionWiseFeedForward(d_model, d_ff, dropout)
+        self.norm3 = nn.LayerNorm(d_model)
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(d_model, 9 * d_model, bias=True)
+        )
+
+    def forward(self, x, c, vis, vis_mask):
+        shift_msa, scale_msa, gate_msa, shift_mca, scale_mca, gate_mca, shift_pf, scale_pf, gate_pf = self.adaLN_modulation(c).chunk(9, dim=1)
+        input = modulate(self.norm1(x), shift_msa, scale_msa)
+        x = x + gate_msa.unsqueeze(1) * self.self_att(input, input, input)
+        input = modulate(self.norm2(x), shift_mca, scale_mca)
+        x = x + gate_mca.unsqueeze(1) * self.enc_att(input, vis, vis, vis_mask)
+        input = modulate(self.norm3(x), shift_pf, scale_pf)
+        x = x + gate_pf.unsqueeze(1) * self.pwff(input)
+        return x
+
+def modulate(x, shift, scale):
+    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+
+def extract(a, t, x_shape):
+    b, *_ = t.shape
+    out = a.gather(-1, t)
+    return out.reshape(b, *((1,) * (len(x_shape) - 1)))
+
+def linear_beta_schedule(timesteps):
+    """
+    linear schedule, proposed in original ddpm paper
+    """
+    scale = 1000 / timesteps
+    beta_start = scale * 0.0001
+    beta_end = scale * 0.02
+    return torch.linspace(beta_start, beta_end, timesteps, dtype = torch.float64)
+
+def cosine_beta_schedule(timesteps, s = 0.008):
+    """
+    cosine schedule
+    as proposed in https://openreview.net/forum?id=-NEXDKk8gZ
+    """
+    steps = timesteps + 1
+    t = torch.linspace(0, timesteps, steps, dtype = torch.float64) / timesteps
+    alphas_cumprod = torch.cos((t + s) / (1 + s) * math.pi * 0.5) ** 2
+    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+    return torch.clip(betas, 0, 0.999)
+
+def sigmoid_beta_schedule(timesteps, start = -3, end = 3, tau = 1, clamp_min = 1e-5):
+    """
+    sigmoid schedule
+    proposed in https://arxiv.org/abs/2212.11972 - Figure 8
+    better for images > 64x64, when used during training
+    """
+    steps = timesteps + 1
+    t = torch.linspace(0, timesteps, steps, dtype = torch.float32) / timesteps
+    v_start = torch.tensor(start / tau).sigmoid()
+    v_end = torch.tensor(end / tau).sigmoid()
+    alphas_cumprod = (-((t * (end - start) + start) / tau).sigmoid() + v_end) / (v_end - v_start)
+    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+    return torch.clip(betas, 0, 0.999).cuda()
+
+def unnormalize_to_zero_to_one(t):
+    return (t + 1) * 0.5
+
+def normalize_to_neg_one_to_one(t):
+    return t * 2 - 1
+
+if __name__ == '__main__':
+    print(sigmoid_beta_schedule(100))
