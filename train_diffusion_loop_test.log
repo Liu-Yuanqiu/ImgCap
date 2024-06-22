@@ -1,0 +1,6 @@
+Namespace(batch_size=128, data_path='../mscoco', epoch1=100, epoch2=200, exp_mode='s2s', exp_name='diffusion_loop_test', feat_dim=1024, layer_num=3, learning_rate=0.0001, log_folder='./logs', patience=5, rank='0', resume_best=False, resume_last=False, seq_len=20, teacher_model_path='/s2s/tm_gt20_ce_entropy/s2s_best.pth', test=False, use_cache='True', use_loss_ce=True, use_loss_entropy=False, use_loss_kl=False, use_loss_l2=False, use_loss_word=True, workers=16)
+2
+1
+Training starts
+Epoch: 0, Learning Rate: 0.000025
+Validation scores {'BLEU': [0.7154515161541749, 0.529885113780834, 0.3754740348718267, 0.2640318844920457], 'METEOR': 0.23169278768873788, 'ROUGE': 0.5191525600979215, 'CIDEr': 0.8546344350146566}
