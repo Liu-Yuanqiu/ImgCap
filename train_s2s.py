@@ -2,7 +2,7 @@ import random
 import evaluation
 from evaluation import Cider
 from data.dataset_kd import build_coco_dataloaders
-from models.detector import build_detector
+#from models.detector import build_detector
 from models.s2s.transformer import Transformer
 from models.s2s.transformer_word import Transformer as Word
 from models.losses import MLCrossEntropy, FocalLossWithLogitsNegLoss, MultiClassCrossEntropy
@@ -23,7 +23,7 @@ import numpy as np
 import itertools
 import multiprocessing
 from shutil import copyfile
-from omegaconf import OmegaConf
+#from omegaconf import OmegaConf
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 random.seed(1234)
@@ -267,8 +267,8 @@ if __name__ == '__main__':
     parser.add_argument('--resume_best', action='store_true')
     parser.add_argument('--test', action='store_true')
 
-    parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--workers', type=int, default=4)
+    parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--workers', type=int, default=16)
     parser.add_argument('--learning_rate', type=float, default=0.0001)
     parser.add_argument('--epoch1', type=int, default=100)
     parser.add_argument('--epoch2', type=int, default=200)
