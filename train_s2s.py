@@ -93,7 +93,7 @@ def train_xe(model, dataloader, optim, text_field):
     model.train()
     loop = 10
     running_loss = .0
-    with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)*loop) as pbar:
+    with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
             image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
             samples['grid'] = samples['grid'].to(device)
@@ -115,7 +115,7 @@ def train_xe(model, dataloader, optim, text_field):
                 losses_info = {}
                 for k in losses:
                     losses_info[k] = losses[k].item()
-                pbar.set_postfix(loss=running_loss / (it + 1), losses=losses_info)
+                pbar.set_postfix(loss=running_loss / (it*loop + i + 1), losses=losses_info)
                 pbar.update()
 
             if args.test:
@@ -267,8 +267,8 @@ if __name__ == '__main__':
     parser.add_argument('--resume_best', action='store_true')
     parser.add_argument('--test', action='store_true')
 
-    parser.add_argument('--batch_size', type=int, default=128)
-    parser.add_argument('--workers', type=int, default=16)
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--learning_rate', type=float, default=0.0001)
     parser.add_argument('--epoch1', type=int, default=100)
     parser.add_argument('--epoch2', type=int, default=200)
@@ -277,11 +277,6 @@ if __name__ == '__main__':
     parser.add_argument('--layer_num', type=int, default=3)
     parser.add_argument('--feat_dim', type=int, default=1024)
     parser.add_argument('--seq_len', type=int, default=20)
-    parser.add_argument('--use_loss_word', action='store_true')
-    parser.add_argument('--use_loss_ce', action='store_true')
-    parser.add_argument('--use_loss_l2', action='store_true')
-    parser.add_argument('--use_loss_entropy', action='store_true')
-    parser.add_argument('--use_loss_kl', action='store_true')
     parser.add_argument('--teacher_model_path', type=str, default='/s2s/tm_gt20_ce_entropy/s2s_best.pth')
     args = parser.parse_args()
     print(args)
@@ -297,10 +292,7 @@ if __name__ == '__main__':
     print(text_field.vocab.stoi['<pad>'])
 
     model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.seq_len, \
-                        N_en=args.layer_num, N_wo=args.layer_num, N_de=args.layer_num, \
-                        use_loss_word=args.use_loss_word, use_loss_ce=args.use_loss_ce, \
-                        use_loss_entropy=args.use_loss_entropy).to(device)
-
+                        N_en=args.layer_num, N_wo=args.layer_num, N_de=args.layer_num).to(device)
 
     def lambda_lr(s):
         base_lr = args.learning_rate

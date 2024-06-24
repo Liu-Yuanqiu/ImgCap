@@ -11,8 +11,6 @@ from models.attention import MultiHeadAttention, PositionWiseFeedForward, sinuso
 
 class Transformer(nn.Module):
     def __init__(self, feat_dim, vocab_size, padding_idx, topk, \
-                use_loss_word=False, use_loss_ce=True, \
-                use_loss_entropy=False, \
                 N_en=3, N_wo=3, N_de=3, \
                 d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, \
                 identity_map_reordering=False, attention_module=None, \
@@ -53,11 +51,8 @@ class Transformer(nn.Module):
         self.vocab_size = vocab_size
         self.topk = topk
         self.dim = d_model
-        self.use_loss_word = use_loss_word
-        self.use_loss_ce = use_loss_ce
         self.label_smoothing = 0.1
         self.confidence = 1.0 - self.label_smoothing
-        self.use_loss_entropy = use_loss_entropy
         self.bos_idx = 2
         
         self.ce_loss = nn.NLLLoss(ignore_index=padding_idx, reduction='none')
@@ -71,6 +66,8 @@ class Transformer(nn.Module):
         alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value = 1.)
         self.sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
         self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1. - alphas_cumprod)
+        self.sqrt_recip_alphas_cumprod = torch.sqrt(1. / alphas_cumprod)
+        self.sqrt_recipm1_alphas_cumprod = torch.sqrt(1. / alphas_cumprod - 1)
         self.posterior_mean_coef1 = betas * torch.sqrt(alphas_cumprod_prev) / (1. - alphas_cumprod)
         self.posterior_mean_coef2 = (1. - alphas_cumprod_prev) * torch.sqrt(alphas) / (1. - alphas_cumprod)
         posterior_variance = betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)
@@ -78,6 +75,7 @@ class Transformer(nn.Module):
         self.timestep_emb = TimestepEmbedder(d_model)
         self.normalize = normalize_to_neg_one_to_one
         self.unnormalize = unnormalize_to_zero_to_one
+        self.objective = "pred_v" # pred_noise pred_x0
     
     def init_weights(self):
         for p in self.parameters():
@@ -124,26 +122,15 @@ class Transformer(nn.Module):
         for l in self.encoderw:
             outw = l(outw, t_emb, enc_img, gri_mask)
 
-        # targets = self.predict_v(x_start, t, noise)
-        targets = x_start
-        loss_w = F.mse_loss(outw, targets)
+        if self.objective == 'pred_noise':
+            target = noise
+        elif self.objective == 'pred_x0':
+            target = x_start
+        elif self.objective == 'pred_v':
+            v = self.predict_v(x_start, t, noise)
+            target = v
+        loss_w = F.mse_loss(outw, target)
         losses.update({"word": loss_w})
-        ################# ######### ####################
-        # if self.use_loss_word:
-        #     enc_txt = self.img2word(enc_img)
-        #     enc_txt = self.word_emb.toText(enc_txt)
-        #     for l in self.encoderw:
-        #         enc_txt = l(enc_txt, enc_txt, enc_img, gri_mask)
-        #     outw = enc_txt[:, :self.topk]
-
-        #     _, logit_w = self.word_emb.bit_fc(outw)
-        #     _, targets = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
-        #     targets = self.word_emb.get_bit_repr(targets)
-        #     loss_w = F.mse_loss(logit_w, targets)
-        #     losses.update({"word": loss_w})
-        # else:
-        #     _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
-        #     outw = self.word_emb.id_embed(gt_topk)
 
         pos_indx = torch.arange(1, self.topk + 1, device='cuda').view(1, -1)
         out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
@@ -151,40 +138,36 @@ class Transformer(nn.Module):
             out = l(out, outw, enc_img, gri_mask)
         
         # ce
-        if self.use_loss_ce:
-            logit_d1 = self.word_emb.fc(out)
-            logP = F.log_softmax(logit_d1.view(-1, logit_d1.shape[-1]), dim=-1) 
-            assign_seq = tokens_kd.view(-1)
-            assign_seq[assign_seq < 0] = 0
+        logit_d1 = self.word_emb.fc(out)
+        logP = F.log_softmax(logit_d1.view(-1, logit_d1.shape[-1]), dim=-1) 
+        assign_seq = tokens_kd.view(-1)
+        assign_seq[assign_seq < 0] = 0
 
-            size = logP.size(1)
-            true_dist = logP.clone()
-            true_dist.fill_(self.label_smoothing / (size - 1))
-            true_dist.scatter_(1, assign_seq.data.unsqueeze(1), self.confidence)
-            loss_s = self.kl_loss(logP, true_dist).sum(1).mean()
-            losses.update({"seq": loss_s})
-
-        # out = out + self.pos_emb_freeze(pos_indx)
-        # self_att_weight = torch.log(torch.tensor(2.)) - self.entropy(out)
-        # self_att_weight = self_att_weight.unsqueeze(1).unsqueeze(1)
-        # for l in self.decoder2:
-        #     out = l(out, out, enc_img, gri_mask, self_att_weight=self_att_weight)
-        # # ce
-        # if self.use_loss_ce:
-        #     out_d2 = self.word_emb.fc(out)
-        #     logit_d2 = F.log_softmax(out_d2, dim=-1)
-        #     loss_ce = self.ce_loss(logit_d2.view(-1, self.vocab_size), tokens_kd.view(-1))
-        #     loss_ce = loss_ce.mean()
-        #     loss['ce2'] = loss_ce
-        
-
-        # entropy
-        if self.use_loss_entropy:
-            loss_e = self.entropy(out)
-            losses.update({"entropy": loss_e.mean()})
-        return losses   
-
-    def infer(self, images, labels=None):
+        size = logP.size(1)
+        true_dist = logP.clone()
+        true_dist.fill_(self.label_smoothing / (size - 1))
+        true_dist.scatter_(1, assign_seq.data.unsqueeze(1), self.confidence)
+        loss_s = self.kl_loss(logP, true_dist).sum(1).mean()
+        losses.update({"seq": loss_s})
+        return losses
+    
+    def predict_start_from_noise(self, x_t, t, noise):
+        return (
+            extract(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t -
+            extract(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape) * noise
+        )
+    def predict_noise_from_start(self, x_t, t, x0):
+        return (
+            (extract(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t - x0) / \
+            extract(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape)
+        )
+    def predict_start_from_v(self, x_t, t, v):
+        return (
+            extract(self.sqrt_alphas_cumprod, t, x_t.shape) * x_t -
+            extract(self.sqrt_one_minus_alphas_cumprod, t, x_t.shape) * v
+        )
+    
+    def infer(self, images):
         gri_feat, gri_mask = images['grid'], images['mask']
         gri_feat = self.image_emb(gri_feat)
 
@@ -192,52 +175,99 @@ class Transformer(nn.Module):
         for l in self.encoder:
             enc_img = l(enc_img, enc_img, enc_img, gri_mask)
 
-        if self.use_loss_word:
-            bs, device = enc_img.shape[0], enc_img.device
-            x = torch.randn((bs, self.topk, self.dim), device=device)
-            x_start = None
-            for t in reversed(range(0, self.num_timesteps)):
-                batched_times = torch.full((bs,), t, device = device, dtype = torch.long)
+        bs, device = enc_img.shape[0], enc_img.device
+        x = torch.randn((bs, self.topk, self.dim), device=device)
+        x_start = None
+        for t in reversed(range(0, self.num_timesteps)):
+            batched_times = torch.full((bs,), t, device = device, dtype = torch.long)
                 
-                batched_times_emb = self.timestep_emb(batched_times)
-                model_out = x
-                for l in self.encoderw:
-                    model_out = l(model_out, batched_times_emb, enc_img, gri_mask)
-                x_start = model_out
-                
-                # pred_noise = (
-                #     (extract(self.sqrt_recip_alphas_cumprod, batched_times, x.shape) * x - x_start) / \
-                #     extract(self.sqrt_recipm1_alphas_cumprod, batched_times, x.shape)
-                # )
-                x_start.clamp_(-1., 1.)
-                model_mean = (
-                    extract(self.posterior_mean_coef1, batched_times, x.shape) * x_start +
-                    extract(self.posterior_mean_coef2, batched_times, x.shape) * x
-                )
-                # posterior_variance = extract(self.posterior_variance, batched_times, x.shape)
-                model_log_variance = extract(self.posterior_log_variance_clipped, batched_times, x.shape)
-                noise = torch.randn_like(x) if t > 0 else 0. # no noise if t == 0
-                x = model_mean + (0.5 * model_log_variance).exp() * noise
-            outw = self.unnormalize(x)
-            ####################### init 0615 ###################
-            # t = torch.tensor([self.num_timesteps], dtype=torch.int32, device=enc_img.device)
-            # t_emb = self.timestep_emb(t)
-            # for l in self.encoderw:
-            #     outw = l(outw, t_emb, enc_img, gri_mask)
-            #####################################################
-        else:
-            _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
-            outw = self.word_emb.id_embed(gt_topk)
+            batched_times_emb = self.timestep_emb(batched_times)
+            model_out = x
+            for l in self.encoderw:
+                model_output = l(model_out, batched_times_emb, enc_img, gri_mask)
+
+            if self.objective == 'pred_noise':
+                pred_noise = model_output
+                x_start = self.predict_start_from_noise(x, batched_times, pred_noise)
+            elif self.objective == 'pred_x0':
+                x_start = model_output
+                pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
+
+            elif self.objective == 'pred_v':
+                v = model_output
+                x_start = self.predict_start_from_v(x, batched_times, v)
+                pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
+            
+            x_start.clamp_(-1., 1.)
+            
+            model_mean = (
+                extract(self.posterior_mean_coef1, batched_times, x.shape) * x_start +
+                extract(self.posterior_mean_coef2, batched_times, x.shape) * x
+            )
+            # posterior_variance = extract(self.posterior_variance, batched_times, x.shape)
+            model_log_variance = extract(self.posterior_log_variance_clipped, batched_times, x.shape)
+            noise = torch.randn_like(x) if t > 0 else 0. # no noise if t == 0
+            x = model_mean + (0.5 * model_log_variance).exp() * noise
+        outw = self.unnormalize(x)
+
+        pos_indx = torch.arange(1, self.topk + 1, device='cuda').view(1, -1)
+        out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
+        for l in self.decoder1:
+            out = l(out, outw, enc_img, gri_mask)
+        
+        out = self.word_emb.fc(out)
+        return F.log_softmax(out, dim=-1)
+    
+    def forward_gt(self, images, labels, tokens_kd):
+        gri_feat, gri_mask = images['grid'], images['mask']
+        gri_feat = self.image_emb(gri_feat)
+
+        bs = gri_feat.shape[0]
+        device = gri_feat.device
+
+        enc_img = gri_feat
+        for l in self.encoder:
+            enc_img = l(enc_img, enc_img, enc_img, gri_mask)
+
+        losses = {}
+        _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
+        outw = self.word_emb.id_embed(gt_topk)
+
+        pos_indx = torch.arange(1, self.topk + 1, device='cuda').view(1, -1)
+        out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
+        for l in self.decoder1:
+            out = l(out, outw, enc_img, gri_mask)
+        
+        # ce
+        logit_d1 = self.word_emb.fc(out)
+        logP = F.log_softmax(logit_d1.view(-1, logit_d1.shape[-1]), dim=-1) 
+        assign_seq = tokens_kd.view(-1)
+        assign_seq[assign_seq < 0] = 0
+
+        size = logP.size(1)
+        true_dist = logP.clone()
+        true_dist.fill_(self.label_smoothing / (size - 1))
+        true_dist.scatter_(1, assign_seq.data.unsqueeze(1), self.confidence)
+        loss_s = self.kl_loss(logP, true_dist).sum(1).mean()
+        losses.update({"seq": loss_s})
+        return losses
+    
+    def infer_gt(self, images, labels):
+        gri_feat, gri_mask = images['grid'], images['mask']
+        gri_feat = self.image_emb(gri_feat)
+
+        enc_img = gri_feat
+        for l in self.encoder:
+            enc_img = l(enc_img, enc_img, enc_img, gri_mask)
+
+        _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
+        outw = self.word_emb.id_embed(gt_topk)
         
         pos_indx = torch.arange(1, self.topk + 1, device='cuda').view(1, -1)
         out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
         for l in self.decoder1:
             out = l(out, outw, enc_img, gri_mask)
         
-        # self_att_weight = torch.log(torch.tensor(2.)) - self.entropy(out)
-        # self_att_weight = self_att_weight.unsqueeze(1).unsqueeze(1)
-        # for l in self.decoder2:
-        #     out = l(out, out, enc_img, gri_mask, self_att_weight=self_att_weight)
         out = self.word_emb.fc(out)
         return F.log_softmax(out, dim=-1)
     
