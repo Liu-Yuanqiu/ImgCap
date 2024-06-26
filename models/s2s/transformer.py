@@ -12,42 +12,26 @@ from models.attention import MultiHeadAttention, PositionWiseFeedForward, sinuso
 class Transformer(nn.Module):
     def __init__(self, feat_dim, vocab_size, padding_idx, topk, \
                 N_en=3, N_wo=3, N_de=3, \
-                d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, \
-                identity_map_reordering=False, attention_module=None, \
-                attention_module_kwargs=None):
+                d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1):
         super(Transformer, self).__init__()
         self.image_emb = nn.Sequential( 
             nn.Linear(feat_dim, d_model), 
             nn.ReLU(), 
             nn.Dropout(p=0.1), 
             nn.LayerNorm(d_model))
-        self.encoder = nn.ModuleList([EncoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
-                                                       identity_map_reordering=identity_map_reordering, 
-                                                       attention_module=attention_module, 
-                                                       attention_module_kwargs=attention_module_kwargs) 
-                                                       for _ in range(N_en)])
-        self.img2word = nn.Linear(d_model, d_model)
-        self.encoderw = ModuleList([DiffusionDecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
-                                                        self_att_module=attention_module, 
-                                                        enc_att_module=attention_module, 
-                                                        self_att_module_kwargs=attention_module_kwargs, 
-                                                        enc_att_module_kwargs=attention_module_kwargs) 
-                                                       for _ in range(N_wo)])    
-        self.decoder1 = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
-                                                self_att_module=attention_module, 
-                                                enc_att_module=attention_module, 
-                                                self_att_module_kwargs=attention_module_kwargs, 
-                                                enc_att_module_kwargs=attention_module_kwargs) 
-                                                for _ in range(N_de)])    
-        self.decoder2 = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
-                                                self_att_module=attention_module, 
-                                                enc_att_module=attention_module, 
-                                                self_att_module_kwargs=attention_module_kwargs, 
-                                                enc_att_module_kwargs=attention_module_kwargs) 
-                                                for _ in range(N_de)])
+        self.encoder = nn.ModuleList([EncoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_en)])
+        # self.img2word = nn.Linear(d_model, d_model)
+        self.encoderw = ModuleList([DiffusionDecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_wo)])    
+        self.decoder1 = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_de)])    
+        # self.decoder2 = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
+        #                                         self_att_module=attention_module, 
+        #                                         enc_att_module=attention_module, 
+        #                                         self_att_module_kwargs=attention_module_kwargs, 
+        #                                         enc_att_module_kwargs=attention_module_kwargs) 
+        #                                         for _ in range(N_de)])
         self.word_emb = WordEmbedding(vocab_size, d_model, padding_idx)
         self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
-        self.pos_emb_freeze = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=True)
+        # self.pos_emb_freeze = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=True)
         self.vocab_size = vocab_size
         self.topk = topk
         self.dim = d_model
@@ -57,31 +41,40 @@ class Transformer(nn.Module):
         
         self.ce_loss = nn.NLLLoss(ignore_index=padding_idx, reduction='none')
         self.kl_loss = nn.KLDivLoss(reduction="none")
-        self.init_weights()
-
+        
         self.num_timesteps = 100
-        betas = sigmoid_beta_schedule(self.num_timesteps) # shape:[num_timesteps,]
-        alphas = 1. - betas
-        alphas_cumprod = torch.cumprod(alphas, dim=0)
-        alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value = 1.)
-        self.sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
-        self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1. - alphas_cumprod)
-        self.sqrt_recip_alphas_cumprod = torch.sqrt(1. / alphas_cumprod)
-        self.sqrt_recipm1_alphas_cumprod = torch.sqrt(1. / alphas_cumprod - 1)
-        self.posterior_mean_coef1 = betas * torch.sqrt(alphas_cumprod_prev) / (1. - alphas_cumprod)
-        self.posterior_mean_coef2 = (1. - alphas_cumprod_prev) * torch.sqrt(alphas) / (1. - alphas_cumprod)
-        posterior_variance = betas * (1. - alphas_cumprod_prev) / (1. - alphas_cumprod)
+        self.betas = sigmoid_beta_schedule(self.num_timesteps) # shape:[num_timesteps,]
+        self.alphas = 1. - self.betas
+        self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
+        self.alphas_cumprod_prev = F.pad(self.alphas_cumprod[:-1], (1, 0), value = 1.)
+        self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
+        self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1. - self.alphas_cumprod)
+        self.sqrt_recip_alphas_cumprod = torch.sqrt(1. / self.alphas_cumprod)
+        self.sqrt_recipm1_alphas_cumprod = torch.sqrt(1. / self.alphas_cumprod - 1)
+        self.posterior_mean_coef1 = self.betas * torch.sqrt(self.alphas_cumprod_prev) / (1. - self.alphas_cumprod)
+        self.posterior_mean_coef2 = (1. - self.alphas_cumprod_prev) * torch.sqrt(self.alphas) / (1. - self.alphas_cumprod)
+        posterior_variance = self.betas * (1. - self.alphas_cumprod_prev) / (1. - self.alphas_cumprod)
         self.posterior_log_variance_clipped = torch.log(posterior_variance.clamp(min =1e-20))
         self.timestep_emb = TimestepEmbedder(d_model)
         self.normalize = normalize_to_neg_one_to_one
         self.unnormalize = unnormalize_to_zero_to_one
         self.objective = "pred_v" # pred_noise pred_x0
+        self.init_weights()
     
+    def tensor_to(self, device):
+        self.sqrt_alphas_cumprod = self.sqrt_alphas_cumprod.to(device)
+        self.sqrt_one_minus_alphas_cumprod = self.sqrt_one_minus_alphas_cumprod.to(device)
+        self.sqrt_recip_alphas_cumprod = self.sqrt_recip_alphas_cumprod.to(device)
+        self.sqrt_recipm1_alphas_cumprod = self.sqrt_recipm1_alphas_cumprod.to(device)
+        self.posterior_mean_coef1 = self.posterior_mean_coef1.to(device)
+        self.posterior_mean_coef2 = self.posterior_mean_coef2.to(device)
+        self.posterior_log_variance_clipped = self.posterior_log_variance_clipped.to(device)
+
     def init_weights(self):
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
-    
+
     def predict_v(self, x_start, t, noise):
         return (
             extract(self.sqrt_alphas_cumprod, t, x_start.shape) * noise -
@@ -132,7 +125,7 @@ class Transformer(nn.Module):
         loss_w = F.mse_loss(outw, target)
         losses.update({"word": loss_w})
 
-        pos_indx = torch.arange(1, self.topk + 1, device='cuda').view(1, -1)
+        pos_indx = torch.arange(1, self.topk + 1, device=enc_img.device).view(1, -1)
         out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
         for l in self.decoder1:
             out = l(out, outw, enc_img, gri_mask)
@@ -210,7 +203,7 @@ class Transformer(nn.Module):
             x = model_mean + (0.5 * model_log_variance).exp() * noise
         outw = self.unnormalize(x)
 
-        pos_indx = torch.arange(1, self.topk + 1, device='cuda').view(1, -1)
+        pos_indx = torch.arange(1, self.topk + 1, device=enc_img.device).view(1, -1)
         out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
         for l in self.decoder1:
             out = l(out, outw, enc_img, gri_mask)
@@ -295,10 +288,10 @@ class WordEmbedding(nn.Module):
         self.dim = dim
         self.padding_idx = padding_idx
         self.weight = nn.Parameter(torch.randn(self.vocab_size, self.dim))
-        self.bit_dim = int(np.ceil(np.log2(vocab_size)))
-        self.weight_bit = nn.Parameter(torch.randn(self.bit_dim, self.dim))
-        vocab_inds = torch.arange(0, vocab_size).long().view(1, vocab_size, 1, 1)
-        self.vocab_bit_buffer = self.decimal_to_bits(vocab_inds, vocab_size=vocab_size, bits=self.bit_dim).cuda()
+        # self.bit_dim = int(np.ceil(np.log2(vocab_size)))
+        # self.weight_bit = nn.Parameter(torch.randn(self.bit_dim, self.dim))
+        # vocab_inds = torch.arange(0, vocab_size).long().view(1, vocab_size, 1, 1)
+        # self.vocab_bit_buffer = self.decimal_to_bits(vocab_inds, vocab_size=vocab_size, bits=self.bit_dim).cuda()
         if self.padding_idx is not None:
             with torch.no_grad():
                 self.weight[self.padding_idx].fill_(0)
@@ -306,45 +299,45 @@ class WordEmbedding(nn.Module):
     def id_embed(self, input_ids):
         return torch.matmul(F.one_hot(input_ids, num_classes=self.vocab_size).type(torch.float32), self.weight)
     
-    def bit_embed(self, input_ids):
-        input_ids_bit = self.get_bit_repr(input_ids)
-        return torch.matmul(input_ids_bit, self.weight_bit)
+    # def bit_embed(self, input_ids):
+    #     input_ids_bit = self.get_bit_repr(input_ids)
+    #     return torch.matmul(input_ids_bit, self.weight_bit)
     
     def fc(self, tensor):
         return torch.matmul(tensor, self.weight.t())
     
-    def bit_fc(self, tensor):
-        logit = torch.matmul(tensor, self.weight.t())
-        prob = F.softmax(logit, -1)
-        # prob = F.sigmoid(logit)
-        logit_w = torch.matmul(prob, self.vocab_bit_buffer.expand(prob.shape[0], -1, -1))
-        return logit, logit_w
+    # def bit_fc(self, tensor):
+    #     logit = torch.matmul(tensor, self.weight.t())
+    #     prob = F.softmax(logit, -1)
+    #     # prob = F.sigmoid(logit)
+    #     logit_w = torch.matmul(prob, self.vocab_bit_buffer.expand(prob.shape[0], -1, -1))
+    #     return logit, logit_w
     
     def toText(self, tensor):
         prob = F.softmax(torch.matmul(tensor, self.weight.t()), -1)
         return torch.matmul(prob, self.weight)
 
-    def get_bit_repr(self, input_ids):
-        batch_size, seq_length = input_ids.shape
-        input_ids = input_ids.view(batch_size, seq_length, 1, 1) # the same as img: batch_size x channel x height x weight
-        input_ids_bit = self.decimal_to_bits(input_ids, vocab_size=self.vocab_size, bits=self.bit_dim)
-        return input_ids_bit
+    # def get_bit_repr(self, input_ids):
+    #     batch_size, seq_length = input_ids.shape
+    #     input_ids = input_ids.view(batch_size, seq_length, 1, 1) # the same as img: batch_size x channel x height x weight
+    #     input_ids_bit = self.decimal_to_bits(input_ids, vocab_size=self.vocab_size, bits=self.bit_dim)
+    #     return input_ids_bit
     
-    def decimal_to_bits(self, x, vocab_size, bits):
-        """ expects image tensor ranging from 0 to 1, outputs bit tensor ranging from -1 to 1 """
-        device = x.device
+    # def decimal_to_bits(self, x, vocab_size, bits):
+    #     """ expects image tensor ranging from 0 to 1, outputs bit tensor ranging from -1 to 1 """
+    #     device = x.device
 
-        x = x.clamp(0, vocab_size-1)
+    #     x = x.clamp(0, vocab_size-1)
 
-        mask = 2 ** torch.arange(bits - 1, -1, -1, device = device)
-        mask = rearrange(mask, 'd -> d 1 1')
-        x = rearrange(x, 'b c h w -> b c 1 h w')
+    #     mask = 2 ** torch.arange(bits - 1, -1, -1, device = device)
+    #     mask = rearrange(mask, 'd -> d 1 1')
+    #     x = rearrange(x, 'b c h w -> b c 1 h w')
 
-        bits = ((x & mask) != 0).float()
-        # bits = rearrange(bits, 'b c d h w -> b (c d) h w')
-        bits = bits.squeeze(-1).squeeze(-1) # batch_size x seq_length x bits x 1 x 1 -> batch_size x seq_length x bits
-        bits = bits * 2 - 1
-        return bits
+    #     bits = ((x & mask) != 0).float()
+    #     # bits = rearrange(bits, 'b c d h w -> b (c d) h w')
+    #     bits = bits.squeeze(-1).squeeze(-1) # batch_size x seq_length x bits x 1 x 1 -> batch_size x seq_length x bits
+    #     bits = bits * 2 - 1
+    #     return bits
 
 class TimestepEmbedder(nn.Module):
     """
@@ -386,16 +379,13 @@ class TimestepEmbedder(nn.Module):
         return t_emb
     
 class EncoderLayer(nn.Module):
-    def __init__(self, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, identity_map_reordering=False,
-                 attention_module=None, attention_module_kwargs=None):
+    def __init__(self, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, identity_map_reordering=False):
         super(EncoderLayer, self).__init__()
         self.identity_map_reordering = identity_map_reordering
-        self.mhatt = MultiHeadAttention(d_model, d_k, d_v, h, dropout, identity_map_reordering=identity_map_reordering,
-                                        attention_module=attention_module,
-                                        attention_module_kwargs=attention_module_kwargs)
+        self.mhatt = MultiHeadAttention(d_model, d_k, d_v, h, dropout)
         self.dropout1 = nn.Dropout(dropout)
         self.lnorm1 = nn.LayerNorm(d_model)
-        self.pwff = PositionWiseFeedForward(d_model, d_ff, dropout, identity_map_reordering=identity_map_reordering)
+        self.pwff = PositionWiseFeedForward(d_model, d_ff, dropout)
         self.dropout2 = nn.Dropout(dropout)
         self.lnorm2 = nn.LayerNorm(d_model)
     def forward(self, queries, keys, values, attention_mask=None, attention_weights=None):
@@ -406,15 +396,10 @@ class EncoderLayer(nn.Module):
         return out
     
 class DecoderLayer(nn.Module):
-    def __init__(self, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, self_att_module=None,
-                 enc_att_module=None, self_att_module_kwargs=None, enc_att_module_kwargs=None):
+    def __init__(self, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1):
         super(DecoderLayer, self).__init__()
-        self.self_att = MultiHeadAttention(d_model, d_k, d_v, h, dropout, can_be_stateful=True,
-                                           attention_module=self_att_module,
-                                           attention_module_kwargs=self_att_module_kwargs)
-        self.enc_att = MultiHeadAttention(d_model, d_k, d_v, h, dropout, can_be_stateful=False,
-                                          attention_module=enc_att_module,
-                                          attention_module_kwargs=enc_att_module_kwargs)
+        self.self_att = MultiHeadAttention(d_model, d_k, d_v, h, dropout, can_be_stateful=False)
+        self.enc_att = MultiHeadAttention(d_model, d_k, d_v, h, dropout, can_be_stateful=False)
 
         self.dropout1 = nn.Dropout(dropout)
         self.lnorm1 = nn.LayerNorm(d_model)
@@ -438,15 +423,10 @@ class DecoderLayer(nn.Module):
         return out
     
 class DiffusionDecoderLayer(nn.Module):
-    def __init__(self, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, self_att_module=None,
-                 enc_att_module=None, self_att_module_kwargs=None, enc_att_module_kwargs=None):
+    def __init__(self, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1):
         super(DiffusionDecoderLayer, self).__init__()
-        self.self_att = MultiHeadAttention(d_model, d_k, d_v, h, dropout, can_be_stateful=True,
-                                           attention_module=self_att_module,
-                                           attention_module_kwargs=self_att_module_kwargs)
-        self.enc_att = MultiHeadAttention(d_model, d_k, d_v, h, dropout, can_be_stateful=False,
-                                          attention_module=enc_att_module,
-                                          attention_module_kwargs=enc_att_module_kwargs)
+        self.self_att = MultiHeadAttention(d_model, d_k, d_v, h, dropout, can_be_stateful=False)
+        self.enc_att = MultiHeadAttention(d_model, d_k, d_v, h, dropout, can_be_stateful=False)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
         self.pwff = PositionWiseFeedForward(d_model, d_ff, dropout)
@@ -470,9 +450,9 @@ def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 def extract(a, t, x_shape):
-    b, *_ = t.shape
-    out = a.gather(-1, t)
-    return out.reshape(b, *((1,) * (len(x_shape) - 1)))
+        b, *_ = t.shape
+        out = a.gather(-1, t)
+        return out.reshape(b, *((1,) * (len(x_shape) - 1)))
 
 def linear_beta_schedule(timesteps):
     """
@@ -508,7 +488,7 @@ def sigmoid_beta_schedule(timesteps, start = -3, end = 3, tau = 1, clamp_min = 1
     alphas_cumprod = (-((t * (end - start) + start) / tau).sigmoid() + v_end) / (v_end - v_start)
     alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
     betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
-    return torch.clip(betas, 0, 0.999).cuda()
+    return torch.clip(betas, 0, 0.999)
 
 def unnormalize_to_zero_to_one(t):
     return (t + 1) * 0.5

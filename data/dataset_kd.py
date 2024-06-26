@@ -249,14 +249,25 @@ def build_coco_dataloaders(use_cache, data_path, batch_size, num_workers, device
 
     batch_size = batch_size
     dataloaders = {}
-    dataloaders['train'] = DataLoader(
-        datasets['train'],
-        batch_size=batch_size,
-        collate_fn=collators['train'],
-        num_workers=num_workers,
-        shuffle=True,
-        pin_memory=True
-    )
+    if torch.distributed.get_world_size()>1:
+        from torch.utils.data.distributed import DistributedSampler
+        sampler = DistributedSampler(dataset=datasets['train'])
+        dataloaders['train'] = DataLoader(
+            datasets['train'],
+            batch_size=batch_size,
+            collate_fn=collators['train'],
+            num_workers=num_workers,
+            sampler=sampler
+        )
+    else:
+        dataloaders['train'] = DataLoader(
+            datasets['train'],
+            batch_size=batch_size,
+            collate_fn=collators['train'],
+            num_workers=num_workers,
+            shuffle=True,
+            pin_memory=True
+        )
     dataloaders['valid'] = DataLoader(
         datasets['valid'],
         batch_size=batch_size,

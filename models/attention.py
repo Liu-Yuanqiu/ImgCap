@@ -153,11 +153,10 @@ class MultiHeadAttention(Module):
     Multi-head attention layer with Dropout and Layer Normalization.
     '''
 
-    def __init__(self, d_model, d_k, d_v, h, dropout=.1, identity_map_reordering=False, can_be_stateful=False,
-                 attention_module=None, attention_module_kwargs=None, comment=None):
+    def __init__(self, d_model, d_k, d_v, h, dropout=.1, identity_map_reordering=False, can_be_stateful=False):
         super(MultiHeadAttention, self).__init__()
         self.identity_map_reordering = identity_map_reordering
-        self.attention = ScaledDotProductAttention(d_model=d_model, d_k=d_k, d_v=d_v, h=h, comment=comment)
+        self.attention = ScaledDotProductAttention(d_model=d_model, d_k=d_k, d_v=d_v, h=h)
         self.dropout = nn.Dropout(p=dropout)
         self.layer_norm = nn.LayerNorm(d_model)
 
