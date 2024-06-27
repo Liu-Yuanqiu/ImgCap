@@ -101,30 +101,72 @@ class Transformer(nn.Module):
         losses = {}
 
         ################# diffusion ####################
-        # x0
+        # _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
+        # x_start = self.word_emb.id_embed(gt_topk)
+        # x_start = self.normalize(x_start)
+        # noise = torch.randn_like(x_start)
+        # t = torch.randint(0, self.num_timesteps, (bs, ), device=device)
+        # x = self.q_sample(x_start=x_start, t=t, noise=noise)
+        # outw = x.to(torch.float32)
+        # t_emb = self.timestep_emb(t)
+        # for l in self.encoderw:
+        #     outw = l(outw, t_emb, enc_img, gri_mask)
+
+        # if self.objective == 'pred_noise':
+        #     target = noise
+        # elif self.objective == 'pred_x0':
+        #     target = x_start
+        # elif self.objective == 'pred_v':
+        #     v = self.predict_v(x_start, t, noise)
+        #     target = v
+        # loss_w = F.mse_loss(outw, target)
+        # losses.update({"word": loss_w})
+        ##############################################
+        loss_w = []
         _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
-        x_start = self.word_emb.id_embed(gt_topk)
-        x_start = self.normalize(x_start)
-        # 
-        t = torch.randint(0, self.num_timesteps, (bs, ), device=device)
-        noise = torch.randn_like(x_start)
-        x = self.q_sample(x_start=x_start, t=t, noise=noise)
+        out_gt = self.word_emb.id_embed(gt_topk)
+        out_gt = self.normalize(out_gt)
+        x = torch.randn((bs, self.topk, self.dim), device=device)
+        noise = x
+        x_start = None
+        for t in reversed(range(0, self.num_timesteps)):
+            batched_times = torch.full((bs,), t, device = device, dtype = torch.long)
+                
+            batched_times_emb = self.timestep_emb(batched_times)
+            model_out = x
+            for l in self.encoderw:
+                model_output = l(model_out, batched_times_emb, enc_img, gri_mask)
 
-        outw = x.to(torch.float32)
-        t_emb = self.timestep_emb(t)
-        for l in self.encoderw:
-            outw = l(outw, t_emb, enc_img, gri_mask)
+            if self.objective == 'pred_noise':
+                pred_noise = model_output
+                x_start = self.predict_start_from_noise(x, batched_times, pred_noise)
+                target = noise
+            elif self.objective == 'pred_x0':
+                x_start = model_output
+                pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
+                target = out_gt
+            elif self.objective == 'pred_v':
+                v = model_output
+                x_start = self.predict_start_from_v(x, batched_times, v)
+                pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
+                target = self.predict_v(out_gt, batched_times, noise)
 
-        if self.objective == 'pred_noise':
-            target = noise
-        elif self.objective == 'pred_x0':
-            target = x_start
-        elif self.objective == 'pred_v':
-            v = self.predict_v(x_start, t, noise)
-            target = v
-        loss_w = F.mse_loss(outw, target)
-        losses.update({"word": loss_w})
+            loss_w_t = F.mse_loss(model_output, target)
+            loss_w.append(loss_w_t)
 
+            x_start.clamp_(-1., 1.)
+            model_mean = (
+                extract(self.posterior_mean_coef1, batched_times, x.shape) * x_start +
+                extract(self.posterior_mean_coef2, batched_times, x.shape) * x
+            )
+            # posterior_variance = extract(self.posterior_variance, batched_times, x.shape)
+            model_log_variance = extract(self.posterior_log_variance_clipped, batched_times, x.shape)
+            noise = torch.randn_like(x) if t > 0 else 0. # no noise if t == 0
+            x = model_mean + (0.5 * model_log_variance).exp() * noise
+        loss_w = torch.stack(loss_w)
+        losses.update({"word": loss_w.mean()})
+
+        outw = self.unnormalize(x)
         pos_indx = torch.arange(1, self.topk + 1, device=enc_img.device).view(1, -1)
         out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
         for l in self.decoder1:

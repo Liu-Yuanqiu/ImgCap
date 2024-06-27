@@ -44,7 +44,7 @@ def evaluate_loss(model, dataloader):
                 samples['mask'] = samples['mask'].to(device)
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
-                losses = model(samples, labels, tokens_kd)
+                losses = model.module(samples, labels, tokens_kd)
 
                 loss = 0
                 for v in losses.values():
@@ -76,7 +76,7 @@ def evaluate_metrics(model, dataloader, text_field):
             labels = labels.to(device)
             with torch.no_grad():
                 logit = model.module.infer(samples)
-            
+            torch.cuda.synchronize()
             _, out = torch.max(logit, -1)
             caps_gen = text_field.decode(out, join_words=False, deduplication=True)
             for i, (gts_i, gen_i) in enumerate(zip(caps_gt, caps_gen)):
@@ -84,6 +84,8 @@ def evaluate_metrics(model, dataloader, text_field):
                 gen['%d_%d' % (it, i)] = [gen_i, ]
                 gts['%d_%d' % (it, i)] = gts_i
             pbar.update()
+            if args.test:
+                break
     # gts = accelerator.gather_for_metrics(gts)
     # gen = accelerator.gather_for_metrics(gen)
     gts = evaluation.PTBTokenizer.tokenize(gts)
@@ -94,7 +96,7 @@ def evaluate_metrics(model, dataloader, text_field):
 def train_xe(model, dataloader, optim, text_field):
     # Training with cross-entropy
     model.train()
-    loop = 10
+    loop = 1
     running_loss = .0
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
@@ -271,7 +273,7 @@ if __name__ == '__main__':
     parser.add_argument('--resume_best', action='store_true')
     parser.add_argument('--test', action='store_true')
 
-    parser.add_argument('--batch_size', type=int, default=96)
+    parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--workers', type=int, default=16)
     parser.add_argument('--learning_rate', type=float, default=0.0001)
     parser.add_argument('--epoch1', type=int, default=100)
@@ -289,12 +291,12 @@ if __name__ == '__main__':
     device = torch.device('cuda', args.local_rank)
     # multiprocessing.set_start_method('spawn')
     
-    # writer = SummaryWriter(log_dir=os.path.join(args.log_folder, args.exp_mode, args.exp_name))
+    writer = SummaryWriter(log_dir=os.path.join(args.log_folder, args.exp_mode, args.exp_name)) if args.local_rank == 0 else None
 
     dataloaders, text_field = build_coco_dataloaders(args.use_cache, args.data_path, args.batch_size, args.workers)
     cider_train = Cider()
-    print(text_field.vocab.stoi['<bos>'])
-    print(text_field.vocab.stoi['<pad>'])
+    # print(text_field.vocab.stoi['<bos>'])
+    # print(text_field.vocab.stoi['<pad>'])
 
     model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.seq_len, \
                         N_en=args.layer_num, N_wo=args.layer_num, N_de=args.layer_num).to(device)
@@ -324,7 +326,7 @@ if __name__ == '__main__':
             print('Resuming from epoch %d, patience %d, validation loss %f, and best cider %f' % (
                 data['epoch'], data['patience'], data['val_loss'], data['best_cider']))
             
-    model = DDP(model, device_ids=[args.local_rank], output_device=args.local_rank)
+    model = DDP(model, device_ids=[args.local_rank], output_device=args.local_rank, find_unused_parameters=True)
 
     def lambda_lr(s):
         base_lr = args.learning_rate
@@ -341,46 +343,48 @@ if __name__ == '__main__':
     optim = Adam(model.parameters(), lr=1, betas=(0.9, 0.98))
     scheduler = LambdaLR(optim, lambda_lr)
 
-    print("Training starts")
+    # print("Training starts")
     for e in range(start_epoch, start_epoch + 100):
-        print("Epoch: %d, Learning Rate: %f" % (e, optim.param_groups[0]['lr']))
+        if args.local_rank == 0:
+            print("Epoch: %d, Learning Rate: %f" % (e, optim.param_groups[0]['lr']))
         if not use_rl:
             train_loss = train_xe(model, dataloaders['train'], optim, text_field)
-            # writer.add_scalar('data/train_loss', train_loss, e)
+            if args.local_rank == 0:
+                writer.add_scalar('data/train_loss', train_loss, e)
         else:
             train_loss, reward, reward_baseline = train_scst(model, dataloaders['train'], optim, cider_train, text_field)
             # writer.add_scalar('data/train_loss', train_loss, e)
             # writer.add_scalar('data/reward', reward, e)
             # writer.add_scalar('data/reward_baseline', reward_baseline, e)
-            
+        dist.barrier()
         if not use_rl:
             # Validation loss
             val_loss = evaluate_loss(model, dataloaders['valid'])
-            # writer.add_scalar('data/val_loss', val_loss, e)
+            if args.local_rank == 0:
+                writer.add_scalar('data/val_loss', val_loss, e)
         else:
             val_loss = 0.0
 
         if args.local_rank==0:
-            dist.barrier()
             # Validation scores
             scores = evaluate_metrics(model, dataloaders['valid'], text_field)
             print("Validation scores", scores)
             val_cider = scores['CIDEr']
-            # writer.add_scalar('data/val_cider', val_cider, e)
-            # writer.add_scalar('data/val_bleu1', scores['BLEU'][0], e)
-            # writer.add_scalar('data/val_bleu4', scores['BLEU'][3], e)
-            # writer.add_scalar('data/val_meteor', scores['METEOR'], e)
-            # writer.add_scalar('data/val_rouge', scores['ROUGE'], e)
+            writer.add_scalar('data/val_cider', val_cider, e)
+            writer.add_scalar('data/val_bleu1', scores['BLEU'][0], e)
+            writer.add_scalar('data/val_bleu4', scores['BLEU'][3], e)
+            writer.add_scalar('data/val_meteor', scores['METEOR'], e)
+            writer.add_scalar('data/val_rouge', scores['ROUGE'], e)
 
             # Test scores
             scores = evaluate_metrics(model, dataloaders['test'], text_field)
             print("Test scores", scores)
             test_cider = scores['CIDEr']
-            # writer.add_scalar('data/test_cider', test_cider, e)
-            # writer.add_scalar('data/test_bleu1', scores['BLEU'][0], e)
-            # writer.add_scalar('data/test_bleu4', scores['BLEU'][3], e)
-            # writer.add_scalar('data/test_meteor', scores['METEOR'], e)
-            # writer.add_scalar('data/test_rouge', scores['ROUGE'], e)
+            writer.add_scalar('data/test_cider', test_cider, e)
+            writer.add_scalar('data/test_bleu1', scores['BLEU'][0], e)
+            writer.add_scalar('data/test_bleu4', scores['BLEU'][3], e)
+            writer.add_scalar('data/test_meteor', scores['METEOR'], e)
+            writer.add_scalar('data/test_rouge', scores['ROUGE'], e)
 
             # Prepare for next epoch
             best = False
@@ -417,5 +421,6 @@ if __name__ == '__main__':
             if exit_train:
                 # writer.close()
                 break
+
         dist.barrier()
         scheduler.step()
