@@ -271,8 +271,8 @@ if __name__ == '__main__':
     parser.add_argument('--resume_best', action='store_true')
     parser.add_argument('--test', action='store_true')
 
-    parser.add_argument('--batch_size', type=int, default=8)
-    parser.add_argument('--workers', type=int, default=4)
+    parser.add_argument('--batch_size', type=int, default=96)
+    parser.add_argument('--workers', type=int, default=16)
     parser.add_argument('--learning_rate', type=float, default=0.0001)
     parser.add_argument('--epoch1', type=int, default=100)
     parser.add_argument('--epoch2', type=int, default=200)
