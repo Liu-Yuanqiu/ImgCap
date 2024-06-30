@@ -44,7 +44,7 @@ def evaluate_loss(model, dataloader):
                 samples['mask'] = samples['mask'].to(device)
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
-                losses = model.module(samples, labels, tokens_kd)
+                losses = model.module(samples, labels, tokens_kd, 0)
 
                 loss = 0
                 for v in losses.values():
@@ -96,17 +96,17 @@ def evaluate_metrics(model, dataloader, text_field):
 def train_xe(model, dataloader, optim, text_field):
     # Training with cross-entropy
     model.train()
-    loop = 1
+    loop = args.num_timesteps
     running_loss = .0
-    with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
+    with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)*loop) as pbar:
         for it, batch in enumerate(dataloader):
             image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
             samples['grid'] = samples['grid'].to(device)
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             tokens_kd = tokens_kd.to(device)
-            for i in range(loop):
-                losses = model(samples, labels, tokens_kd)
+            for t in range(loop):
+                losses = model(samples, labels, tokens_kd, t)
                 # print(losses)
                 optim.zero_grad()
                 loss = 0
@@ -121,8 +121,8 @@ def train_xe(model, dataloader, optim, text_field):
                 losses_info = {}
                 for k in losses:
                     losses_info[k] = losses[k].item()
-            pbar.set_postfix(loss=running_loss / (it*loop + 1), losses=losses_info)
-            pbar.update()
+                pbar.set_postfix(loss=running_loss / (it*loop+t+1), losses=losses_info)
+                pbar.update()
 
             if args.test:
                 break
@@ -273,8 +273,9 @@ if __name__ == '__main__':
     parser.add_argument('--resume_best', action='store_true')
     parser.add_argument('--test', action='store_true')
 
-    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--batch_size', type=int, default=512)
     parser.add_argument('--workers', type=int, default=16)
+    parser.add_argument('--num_timesteps', type=int, default=100)
     parser.add_argument('--learning_rate', type=float, default=0.0001)
     parser.add_argument('--epoch1', type=int, default=100)
     parser.add_argument('--epoch2', type=int, default=200)
@@ -289,7 +290,7 @@ if __name__ == '__main__':
     dist.init_process_group(backend='nccl')
     # os.environ["CUDA_VISIBLE_DEVICES"] = args.rank
     device = torch.device('cuda', args.local_rank)
-    # multiprocessing.set_start_method('spawn')
+    multiprocessing.set_start_method('spawn')
     
     writer = SummaryWriter(log_dir=os.path.join(args.log_folder, args.exp_mode, args.exp_name)) if args.local_rank == 0 else None
 
@@ -298,7 +299,7 @@ if __name__ == '__main__':
     # print(text_field.vocab.stoi['<bos>'])
     # print(text_field.vocab.stoi['<pad>'])
 
-    model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.seq_len, \
+    model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.seq_len, args.num_timesteps,\
                         N_en=args.layer_num, N_wo=args.layer_num, N_de=args.layer_num).to(device)
     model.tensor_to(device)
     args.model_path = os.path.join("./ckpts", args.exp_mode, args.exp_name)
