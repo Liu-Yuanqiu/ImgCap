@@ -175,17 +175,17 @@ class COCO_KD:
         self.val_samples = []
         self.test_samples = []
 
-        if os.path.exists(os.path.join(root_path, "cached_coco_train.json")):
-            self.train_samples = json.load(open(os.path.join(root_path, "cached_coco_train.json"), "r"))
-            self.val_samples = json.load(open(os.path.join(root_path, "cached_coco_val.json"), "r"))
-            self.test_samples = json.load(open(os.path.join(root_path, "cached_coco_test.json"), "r"))
+        if os.path.exists(os.path.join(root_path, "cached_coco_kd3_train.json")):
+            self.train_samples = json.load(open(os.path.join(root_path, "cached_coco_kd3_train.json"), "r"))
+            self.val_samples = json.load(open(os.path.join(root_path, "cached_coco_kd3_val.json"), "r"))
+            self.test_samples = json.load(open(os.path.join(root_path, "cached_coco_kd3_test.json"), "r"))
         else:
             self.text_field = text_field
             ids_train = load_txt(os.path.join(root_path, 'txt', 'coco_train_image_id.txt'))
             ids_val = load_txt(os.path.join(root_path, 'txt', 'coco_val_image_id.txt'))
             ids_test = load_txt(os.path.join(root_path, 'txt', 'coco_test_image_id.txt'))
             
-            samples = json.load(open(os.path.join(root_path, "annotations", 'captions_transformer.json'), "r"))
+            samples = json.load(open(os.path.join(root_path, "annotations", 'captions_kd3.json'), "r"))
 
             for sam in samples:
                 img_id = sam['image_id']
@@ -207,9 +207,9 @@ class COCO_KD:
                     self.test_samples.append(s)
                 else:
                     raise ValueError("wrong image id")
-            json.dump(self.train_samples, open(os.path.join(root_path, "cached_coco_train.json"), "w"))
-            json.dump(self.val_samples, open(os.path.join(root_path, "cached_coco_val.json"), "w"))
-            json.dump(self.test_samples, open(os.path.join(root_path, "cached_coco_test.json"), "w"))
+            json.dump(self.train_samples, open(os.path.join(root_path, "cached_coco_kd3_train.json"), "w"))
+            json.dump(self.val_samples, open(os.path.join(root_path, "cached_coco_kd3_val.json"), "w"))
+            json.dump(self.test_samples, open(os.path.join(root_path, "cached_coco_kd3_test.json"), "w"))
 
 def get_stop_words(text_field, stop_word_path):
     words = load_txt(stop_word_path)

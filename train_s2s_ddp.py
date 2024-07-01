@@ -26,7 +26,8 @@ import itertools
 import multiprocessing
 from shutil import copyfile
 #from omegaconf import OmegaConf
-
+from torch.cuda.amp import autocast as autocast
+from torch.cuda.amp import GradScaler
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 random.seed(1234)
 torch.manual_seed(1234)
@@ -106,16 +107,19 @@ def train_xe(model, dataloader, optim, text_field):
             labels = labels.to(device)
             tokens_kd = tokens_kd.to(device)
             for t in range(loop):
-                losses = model(samples, labels, tokens_kd, t)
+                with autocast():
+                    losses = model(samples, labels, tokens_kd, t)
                 # print(losses)
                 optim.zero_grad()
                 loss = 0
                 for v in losses.values():
                     loss += v
-                loss.backward()
-                # accelerator.backward(loss)
+                scaler.scale(loss).backward()
+                # loss.backward()
 
-                optim.step()
+                scaler.step(optim)
+                scaler.update()
+                # optim.step()
                 this_loss = loss.item()
                 running_loss += this_loss
                 losses_info = {}
@@ -276,7 +280,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=512)
     parser.add_argument('--workers', type=int, default=16)
     parser.add_argument('--num_timesteps', type=int, default=100)
-    parser.add_argument('--learning_rate', type=float, default=0.001)
+    parser.add_argument('--learning_rate', type=float, default=0.0001)
     parser.add_argument('--epoch1', type=int, default=100)
     parser.add_argument('--epoch2', type=int, default=200)
     parser.add_argument('--patience', type=int, default=5)
@@ -343,7 +347,7 @@ if __name__ == '__main__':
     # Initial conditions
     optim = Adam(model.parameters(), lr=1, betas=(0.9, 0.98))
     scheduler = LambdaLR(optim, lambda_lr)
-
+    scaler = GradScaler()
     # print("Training starts")
     for e in range(start_epoch, start_epoch + 100):
         if args.local_rank == 0:
