@@ -276,7 +276,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=512)
     parser.add_argument('--workers', type=int, default=16)
     parser.add_argument('--num_timesteps', type=int, default=100)
-    parser.add_argument('--learning_rate', type=float, default=0.0001)
+    parser.add_argument('--learning_rate', type=float, default=0.001)
     parser.add_argument('--epoch1', type=int, default=100)
     parser.add_argument('--epoch2', type=int, default=200)
     parser.add_argument('--patience', type=int, default=5)
