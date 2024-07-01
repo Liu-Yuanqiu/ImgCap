@@ -6,7 +6,7 @@
 #DSUB -n s2s_diffusion
 #DSUB -A root.dallgdaxrjxylhlsktzu
 #DSUB -q root.default
-#DSUB -R cpu=128;gpu=4
+#DSUB -R cpu=128;gpu=4;mem=204800
 #DSUB -N 1
 #DSUB -oo ./logs/out.log
 #DSUB -eo ./logs/err.log
