@@ -173,12 +173,14 @@ class COCO_KD:
     def __init__(self, text_field, root_path, use_cache):
         self.train_samples = []
         self.val_samples = []
-        self.test_samples = []
+        self.val_test_samples = []
+        self.test_test_samples = []
 
-        if os.path.exists(os.path.join(root_path, "cached_coco_kd3_train.json")):
-            self.train_samples = json.load(open(os.path.join(root_path, "cached_coco_kd3_train.json"), "r"))
-            self.val_samples = json.load(open(os.path.join(root_path, "cached_coco_kd3_val.json"), "r"))
-            self.test_samples = json.load(open(os.path.join(root_path, "cached_coco_kd3_test.json"), "r"))
+        if os.path.exists(os.path.join(root_path, "cached_coco_train_kd3.json")):
+            self.train_samples = json.load(open(os.path.join(root_path, "cached_coco_train_kd3.json"), "r"))
+            self.val_samples = json.load(open(os.path.join(root_path, "cached_coco_val_kd3.json"), "r"))
+            self.val_test_samples = json.load(open(os.path.join(root_path, "cached_coco_val_test.json"), "r"))
+            self.test_test_samples = json.load(open(os.path.join(root_path, "cached_coco_test_test.json"), "r"))
         else:
             self.text_field = text_field
             ids_train = load_txt(os.path.join(root_path, 'txt', 'coco_train_image_id.txt'))
@@ -186,7 +188,8 @@ class COCO_KD:
             ids_test = load_txt(os.path.join(root_path, 'txt', 'coco_test_image_id.txt'))
             
             samples = json.load(open(os.path.join(root_path, "annotations", 'captions_kd3.json'), "r"))
-
+            val_ids = []
+            test_ids = []
             for sam in samples:
                 img_id = sam['image_id']
                 cap_kd = sam['gen']
@@ -202,14 +205,20 @@ class COCO_KD:
                 if img_id in ids_train:
                     self.train_samples.append(s)
                 elif img_id in ids_val:
+                    if img_id not in val_ids:
+                        self.val_test_samples.append(s)
+                        val_ids.append(img_id)
                     self.val_samples.append(s)
                 elif img_id in ids_test:
-                    self.test_samples.append(s)
+                    if img_id not in test_ids:
+                        self.test_test_samples.append(s)
+                        test_ids.append(img_id)
                 else:
                     raise ValueError("wrong image id")
-            json.dump(self.train_samples, open(os.path.join(root_path, "cached_coco_kd3_train.json"), "w"))
-            json.dump(self.val_samples, open(os.path.join(root_path, "cached_coco_kd3_val.json"), "w"))
-            json.dump(self.test_samples, open(os.path.join(root_path, "cached_coco_kd3_test.json"), "w"))
+            json.dump(self.train_samples, open(os.path.join(root_path, "cached_coco_train_kd3.json"), "w"))
+            json.dump(self.val_samples, open(os.path.join(root_path, "cached_coco_val_kd3.json"), "w"))
+            json.dump(self.val_test_samples, open(os.path.join(root_path, "cached_coco_val_test.json"), "w"))
+            json.dump(self.test_test_samples, open(os.path.join(root_path, "cached_coco_test_test.json"), "w"))
 
 def get_stop_words(text_field, stop_word_path):
     words = load_txt(stop_word_path)
@@ -234,7 +243,8 @@ def build_coco_dataloaders(use_cache, data_path, batch_size, num_workers, device
     datasets = {
         'train': PairedDataset(coco.train_samples, transform['train'], use_cache, len(text_field.vocab), stop_words),
         'valid': PairedDataset(coco.val_samples, transform['valid'], use_cache, len(text_field.vocab), stop_words),
-        'test': PairedDataset(coco.test_samples, transform['valid'], use_cache, len(text_field.vocab), stop_words),
+        'val_test': PairedDataset(coco.val_test_samples, transform['valid'], use_cache, len(text_field.vocab), stop_words),
+        'test_test': PairedDataset(coco.test_test_samples, transform['valid'], use_cache, len(text_field.vocab), stop_words),
     }
     # label = datasets['train'].__getitem__(120)[6]
     # for i in range(label.shape[0]):
@@ -244,7 +254,8 @@ def build_coco_dataloaders(use_cache, data_path, batch_size, num_workers, device
     collators = {
         'train': PairedCollator(use_cache, device=device),
         'valid': PairedCollator(use_cache, device=device),
-        'test': PairedCollator(use_cache, device=device),
+        'val_test': PairedCollator(use_cache, device=device),
+        'test_test': PairedCollator(use_cache, device=device),
     }
 
     batch_size = batch_size
@@ -276,11 +287,19 @@ def build_coco_dataloaders(use_cache, data_path, batch_size, num_workers, device
         shuffle=False,
         pin_memory=True
     )
-    dataloaders['test'] = DataLoader(
-        datasets['test'],
+    dataloaders['val_test'] = DataLoader(
+        datasets['val_test'],
         batch_size=batch_size,
         num_workers=num_workers,
-        collate_fn=collators['test'],
+        collate_fn=collators['val_test'],
+        shuffle=False,
+        pin_memory=True
+    )
+    dataloaders['test_test'] = DataLoader(
+        datasets['test_test'],
+        batch_size=batch_size,
+        num_workers=num_workers,
+        collate_fn=collators['test_test'],
         shuffle=False,
         pin_memory=True
     )

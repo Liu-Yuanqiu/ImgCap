@@ -3,7 +3,7 @@ import evaluation
 from evaluation import Cider
 from data.dataset_kd import build_coco_dataloaders, build_coco_dataloaders_test4w
 from models.detector import build_detector
-from models.s2s.transformer_pe_weightloss_cmal import Transformer
+from models.s2s.transformer import Transformer
 import json
 import torch
 from torch.optim import Adam
@@ -38,7 +38,7 @@ def evaluate_metrics(model, dataloader, text_field):
             samples['grid'] = samples['grid'].to(device)
             samples['mask'] = samples['mask'].to(device)
             with torch.no_grad():
-                _, logit = model(samples)
+                logit = model.infer(samples)
             
             _, out = torch.max(logit, -1)
             caps_gen = text_field.decode(out, join_words=False, deduplication=True)
@@ -56,16 +56,17 @@ def evaluate_metrics(model, dataloader, text_field):
 if __name__ == '__main__':
     multiprocessing.set_start_method('spawn')
     device = torch.device('cuda')
-    args = OmegaConf.load('configs/s2s_pe_weightloss.yaml')
-    root_path = "./mscoco"
-    loaders, _ = build_coco_dataloaders(args)
+    root_path = "../mscoco"
+    loaders, _ = build_coco_dataloaders(True, root_path, 128, 8)
     loader4w, load3w, text_field = build_coco_dataloaders_test4w()
 
     # Model and dataloaders
-    model = Transformer(len(text_field.vocab), text_field.vocab.stoi['<pad>']).to(device)
-
-    model_path = os.path.join("./ckpts", "s2s0411", "pe_weightloss_cmal")
-    fname = os.path.join(model_path, '%s_best.pth' % "s2s0411")
+    model = Transformer(1024, len(text_field.vocab), text_field.vocab.stoi['<pad>'], \
+                        20, 100, 100,\
+                        N_en=3, N_wo=3, N_de=3).to(device)
+    model.tensor_to(device)
+    model_path = os.path.join("./ckpts", "s2s", "diffusion_loop_test1")
+    fname = os.path.join(model_path, '%s_best.pth' % "s2s")
     assert os.path.exists(fname), "weight is not found"
     data = torch.load(fname)
     torch.set_rng_state(data['torch_rng_state'])
@@ -75,12 +76,12 @@ if __name__ == '__main__':
     model.load_state_dict(data['state_dict'], strict=False)
     print('Resuming from epoch %d, best cider %f' % (
                 data['epoch'], data['best_cider']))
-
+    model.eval()
     scores = evaluate_metrics(model, loaders["valid"], text_field)
     print("Validation scores", scores)
     scores = evaluate_metrics(model, loaders["test"], text_field)
     print("Test scores", scores)
-    model.eval()
+    
     data4w = []
     with tqdm(desc='infer', unit='it', total=len(loader4w)) as pbar:
         for it, batch in enumerate(loader4w):

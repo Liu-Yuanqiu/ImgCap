@@ -277,8 +277,8 @@ if __name__ == '__main__':
     parser.add_argument('--resume_best', action='store_true')
     parser.add_argument('--test', action='store_true')
 
-    parser.add_argument('--batch_size', type=int, default=512)
-    parser.add_argument('--workers', type=int, default=16)
+    parser.add_argument('--batch_size', type=int, default=480)
+    parser.add_argument('--workers', type=int, default=6)
     parser.add_argument('--num_timesteps', type=int, default=100)
     parser.add_argument('--learning_rate', type=float, default=0.0001)
     parser.add_argument('--epoch1', type=int, default=100)
@@ -303,7 +303,7 @@ if __name__ == '__main__':
     # print(text_field.vocab.stoi['<bos>'])
     # print(text_field.vocab.stoi['<pad>'])
 
-    model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.seq_len, args.num_timesteps,\
+    model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.seq_len, args.num_timesteps, args.num_timesteps,\
                         N_en=args.layer_num, N_wo=args.layer_num, N_de=args.layer_num).to(device)
     model.tensor_to(device)
     args.model_path = os.path.join("./ckpts", args.exp_mode, args.exp_name)
@@ -372,7 +372,7 @@ if __name__ == '__main__':
 
         if args.local_rank==0:
             # Validation scores
-            scores = evaluate_metrics(model, dataloaders['valid'], text_field)
+            scores = evaluate_metrics(model, dataloaders['val_test'], text_field)
             print("Validation scores", scores)
             val_cider = scores['CIDEr']
             writer.add_scalar('data/val_cider', val_cider, e)
@@ -382,7 +382,7 @@ if __name__ == '__main__':
             writer.add_scalar('data/val_rouge', scores['ROUGE'], e)
 
             # Test scores
-            scores = evaluate_metrics(model, dataloaders['test'], text_field)
+            scores = evaluate_metrics(model, dataloaders['test_test'], text_field)
             print("Test scores", scores)
             test_cider = scores['CIDEr']
             writer.add_scalar('data/test_cider', test_cider, e)

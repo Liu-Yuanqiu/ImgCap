@@ -10,7 +10,7 @@ from models.containers import ModuleList
 from models.attention import MultiHeadAttention, PositionWiseFeedForward, sinusoid_encoding_table
 
 class Transformer(nn.Module):
-    def __init__(self, feat_dim, vocab_size, padding_idx, topk, num_timesteps,\
+    def __init__(self, feat_dim, vocab_size, padding_idx, topk, num_timesteps, sampling_timesteps=None, ddim_sampling_eta=0.,\
                 N_en=3, N_wo=3, N_de=3, \
                 d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1):
         super(Transformer, self).__init__()
@@ -23,12 +23,7 @@ class Transformer(nn.Module):
         # self.img2word = nn.Linear(d_model, d_model)
         self.encoderw = ModuleList([DiffusionDecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_wo)])    
         self.decoder1 = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_de)])    
-        # self.decoder2 = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, 
-        #                                         self_att_module=attention_module, 
-        #                                         enc_att_module=attention_module, 
-        #                                         self_att_module_kwargs=attention_module_kwargs, 
-        #                                         enc_att_module_kwargs=attention_module_kwargs) 
-        #                                         for _ in range(N_de)])
+        # self.decoder2 = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout)  for _ in range(N_de)])
         self.word_emb = WordEmbedding(vocab_size, d_model, padding_idx)
         self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
         # self.pos_emb_freeze = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=True)
@@ -41,8 +36,12 @@ class Transformer(nn.Module):
         
         self.ce_loss = nn.NLLLoss(ignore_index=padding_idx, reduction='none')
         self.kl_loss = nn.KLDivLoss(reduction="none")
-        
+        self.init_weights()
         self.num_timesteps = num_timesteps
+        self.sampling_timesteps = num_timesteps if sampling_timesteps is None else sampling_timesteps
+        self.is_ddim_sampling = self.sampling_timesteps < num_timesteps
+        self.ddim_sampling_eta = ddim_sampling_eta
+
         self.betas = sigmoid_beta_schedule(self.num_timesteps) # shape:[num_timesteps,]
         self.alphas = 1. - self.betas
         self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
@@ -59,7 +58,7 @@ class Transformer(nn.Module):
         self.normalize = normalize_to_neg_one_to_one
         self.unnormalize = unnormalize_to_zero_to_one
         self.objective = "pred_v" # pred_noise pred_x0
-        self.init_weights()
+        
     
     def tensor_to(self, device):
         self.sqrt_alphas_cumprod = self.sqrt_alphas_cumprod.to(device)
@@ -207,36 +206,74 @@ class Transformer(nn.Module):
         bs, device = enc_img.shape[0], enc_img.device
         x = torch.randn((bs, self.topk, self.dim), device=device)
         x_start = None
-        for t in reversed(range(0, self.num_timesteps)):
-            batched_times = torch.full((bs,), t, device = device, dtype = torch.long)
+        if self.is_ddim_sampling:
+            times = torch.linspace(-1, self.num_timesteps - 1, steps = self.sampling_timesteps + 1)   # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps
+            times = list(reversed(times.int().tolist()))
+            time_pairs = list(zip(times[:-1], times[1:]))
+            for time, time_next in time_pairs:
+                batched_times = torch.full((bs,), time, device = device, dtype = torch.long)
+                batched_times_emb = self.timestep_emb(batched_times)
+                model_output = x
+                for l in self.encoderw:
+                    model_output = l(model_output, batched_times_emb, enc_img, gri_mask)
+                if self.objective == 'pred_noise':
+                    pred_noise = model_output
+                    x_start = self.predict_start_from_noise(x, batched_times, pred_noise)
+                elif self.objective == 'pred_x0':
+                    x_start = model_output
+                    pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
+
+                elif self.objective == 'pred_v':
+                    v = model_output
+                    x_start = self.predict_start_from_v(x, batched_times, v)
+                    pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
                 
-            batched_times_emb = self.timestep_emb(batched_times)
-            model_out = x
-            for l in self.encoderw:
-                model_output = l(model_out, batched_times_emb, enc_img, gri_mask)
+                if time_next < 0:
+                    x = x_start
+                    continue
 
-            if self.objective == 'pred_noise':
-                pred_noise = model_output
-                x_start = self.predict_start_from_noise(x, batched_times, pred_noise)
-            elif self.objective == 'pred_x0':
-                x_start = model_output
-                pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
+                alpha = self.alphas_cumprod[time]
+                alpha_next = self.alphas_cumprod[time_next]
 
-            elif self.objective == 'pred_v':
-                v = model_output
-                x_start = self.predict_start_from_v(x, batched_times, v)
-                pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
-            
-            x_start.clamp_(-1., 1.)
-            
-            model_mean = (
-                extract(self.posterior_mean_coef1, batched_times, x.shape) * x_start +
-                extract(self.posterior_mean_coef2, batched_times, x.shape) * x
-            )
-            # posterior_variance = extract(self.posterior_variance, batched_times, x.shape)
-            model_log_variance = extract(self.posterior_log_variance_clipped, batched_times, x.shape)
-            noise = torch.randn_like(x) if t > 0 else 0. # no noise if t == 0
-            x = model_mean + (0.5 * model_log_variance).exp() * noise
+                sigma = self.ddim_sampling_eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
+                c = (1 - alpha_next - sigma ** 2).sqrt()
+
+                noise = torch.randn_like(x)
+
+                x = x_start * alpha_next.sqrt() + \
+                    c * pred_noise + \
+                    sigma * noise
+        else:
+            for t in reversed(range(0, self.num_timesteps)):
+                batched_times = torch.full((bs,), t, device = device, dtype = torch.long)
+                    
+                batched_times_emb = self.timestep_emb(batched_times)
+                model_output = x
+                for l in self.encoderw:
+                    model_output = l(model_output, batched_times_emb, enc_img, gri_mask)
+
+                if self.objective == 'pred_noise':
+                    pred_noise = model_output
+                    x_start = self.predict_start_from_noise(x, batched_times, pred_noise)
+                elif self.objective == 'pred_x0':
+                    x_start = model_output
+                    pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
+
+                elif self.objective == 'pred_v':
+                    v = model_output
+                    x_start = self.predict_start_from_v(x, batched_times, v)
+                    pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
+                
+                x_start.clamp_(-1., 1.)
+                
+                model_mean = (
+                    extract(self.posterior_mean_coef1, batched_times, x.shape) * x_start +
+                    extract(self.posterior_mean_coef2, batched_times, x.shape) * x
+                )
+                # posterior_variance = extract(self.posterior_variance, batched_times, x.shape)
+                model_log_variance = extract(self.posterior_log_variance_clipped, batched_times, x.shape)
+                noise = torch.randn_like(x) if t > 0 else 0. # no noise if t == 0
+                x = model_mean + (0.5 * model_log_variance).exp() * noise
         outw = self.unnormalize(x)
 
         pos_indx = torch.arange(1, self.topk + 1, device=enc_img.device).view(1, -1)
