@@ -51,7 +51,7 @@ def evaluate_loss(model, dataloader):
                 running_loss += this_loss
                 losses_info = {}
                 for k in losses:
-                    item = '%.2f' % losses[k].item()
+                    item = '%.4f' % losses[k].item()
                     losses_info[k] = item
                 pbar.set_postfix(loss=running_loss / (it + 1), losses=losses_info)
                 pbar.update()
@@ -115,7 +115,7 @@ def train_xe(model, dataloader, optim, text_field):
                 running_loss += this_loss
                 losses_info = {}
                 for k in losses:
-                    item = '%.2f' % losses[k].item()
+                    item = '%.4f' % losses[k].item()
                     losses_info[k] = item
                 pbar.set_postfix(loss=running_loss / (it*loop + i + 1), losses=losses_info)
             pbar.update()

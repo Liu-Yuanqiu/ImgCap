@@ -14,5 +14,5 @@
 #===========================================================
 #加载环境变量
 #===========================================================
-CUDA_VISIBLE_DEVICES="0,1" python -m torch.distributed.launch --nproc_per_node 2 train_s2s_ddp.py --exp_name kd3_step100_sample100_loop10 --num_timesteps 100 --sample_timesteps 100 --loop 10 --epoch1 100 --epoch2 200 > ./logs/kd3_step100_sample100_loop10.log
+CUDA_VISIBLE_DEVICES="0,1" python -m torch.distributed.launch --nproc_per_node 2 --master_port 29501 train_s2s_ddp.py --exp_name kd3_step100_sample100_loop10 --num_timesteps 100 --sample_timesteps 100 --loop 10 --epoch1 100 --epoch2 200 > ./logs/kd3_step100_sample100_loop10.log
 # python train_s2s.py --exp_name kd3_step100_sample100_loop10 --num_timesteps 100 --sample_timesteps 100 --loop 10 --epoch1 100 --epoch2 200 > ./logs/kd3_step100_sample100_loop10.log

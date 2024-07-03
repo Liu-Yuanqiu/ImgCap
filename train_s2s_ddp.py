@@ -54,7 +54,8 @@ def evaluate_loss(model, dataloader):
                 running_loss += this_loss
                 losses_info = {}
                 for k in losses:
-                    losses_info[k] = losses[k].item()
+                    item = '%.4f' % losses[k].item()
+                    losses_info[k] = item
                 pbar.set_postfix(loss=running_loss / (it + 1), losses=losses_info)
                 pbar.update()
 
@@ -97,7 +98,7 @@ def evaluate_metrics(model, dataloader, text_field):
 def train_xe(model, dataloader, optim, text_field):
     # Training with cross-entropy
     model.train()
-    loop = args.num_timesteps
+    loop = args.loop
     running_loss = .0
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)*loop) as pbar:
         for it, batch in enumerate(dataloader):
@@ -124,7 +125,8 @@ def train_xe(model, dataloader, optim, text_field):
                 running_loss += this_loss
                 losses_info = {}
                 for k in losses:
-                    losses_info[k] = losses[k].item()
+                    item = '%.4f' % losses[k].item()
+                    losses_info[k] = item
                 pbar.set_postfix(loss=running_loss / (it*loop+t+1), losses=losses_info)
                 pbar.update()
 
@@ -277,9 +279,11 @@ if __name__ == '__main__':
     parser.add_argument('--resume_best', action='store_true')
     parser.add_argument('--test', action='store_true')
 
-    parser.add_argument('--batch_size', type=int, default=480)
-    parser.add_argument('--workers', type=int, default=6)
+    parser.add_argument('--batch_size', type=int, default=96)
+    parser.add_argument('--workers', type=int, default=12)
     parser.add_argument('--num_timesteps', type=int, default=100)
+    parser.add_argument('--sample_timesteps', type=int, default=10)
+    parser.add_argument('--loop', type=int, default=10)
     parser.add_argument('--learning_rate', type=float, default=0.0001)
     parser.add_argument('--epoch1', type=int, default=100)
     parser.add_argument('--epoch2', type=int, default=200)
