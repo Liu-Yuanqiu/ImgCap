@@ -260,7 +260,7 @@ def build_coco_dataloaders(use_cache, data_path, batch_size, num_workers, device
 
     batch_size = batch_size
     dataloaders = {}
-    if torch.distributed.get_world_size()>1:
+    if torch.cuda.device_count()>1:
         from torch.utils.data.distributed import DistributedSampler
         sampler = DistributedSampler(dataset=datasets['train'])
         dataloaders['train'] = DataLoader(

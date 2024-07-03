@@ -86,7 +86,7 @@ class Transformer(nn.Module):
             extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
     
-    def forward(self, images, labels, tokens_kd, t):
+    def forward(self, images, labels, tokens_kd):
         gri_feat, gri_mask = images['grid'], images['mask']
         gri_feat = self.image_emb(gri_feat)
 

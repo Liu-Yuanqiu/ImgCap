@@ -19,46 +19,20 @@ python test.py
 
 ## diffusion_loop_test1
 ```
+use kd; step100; sample100; loop10
 python train_s2s.py --exp_name diffusion_loop_test1 --epoch1 43 --epoch2 45
 
 Epoch: 56, Learning Rate: 0.000004
 Validation scores {'BLEU': [0.8135049920187617, 0.6554888589426111, 0.5058054141056576, 0.38364798186371213], 'METEOR': 0.28121353295191004, 'ROUGE': 0.5810628828015832, 'CIDEr': 1.2556216017448463}
 Test scores {'BLEU': [0.8145345778453518, 0.6546796721911093, 0.5044087463643228, 0.38201691914476105], 'METEOR': 0.2799974473714809, 'ROUGE': 0.5786321355001061, 'CIDEr': 1.2619082192175866}
 ```
-
-## Training procedure
-Run `python train.py` using the following arguments:
-
-| Argument | Model |
-|------|------|
-| `python train_transformer.py` | Auto-regressive Image Captioning |
-
-## 实验记录
-### teacher model
-- tm_gt20_ce: 基础版本，使用真实20单词，交叉熵监督训练
+## kd3_step100_sample100_loop10
 ```
-python train_s2s.py --rank 0 --exp_name tm_gt20_ce --use_loss_ce
-python train_s2s.py --rank 0 --exp_name tm_gt20_ce --use_loss_ce --resume_best --epoch1 35
-python train_s2s.py --rank 0 --exp_name tm_gt20_ce --use_loss_ce --resume_best --epoch1 35 --epoch2 37
+python train_s2s.py --exp_name kd3_step100_sample100_loop10 --num_timesteps 100 --sample_timesteps 100 --loop 10 --epoch1 100 --epoch2 200
 ```
-- tm_gt20_ce_entropy：在基础版本上增加熵损失
+## kd3_step100_sample10_loop10
 ```
-python train_s2s.py --rank 2 --exp_name tm_gt20_ce_entropy --use_loss_ce --use_loss_entropy
-python train_s2s.py --rank 2 --exp_name tm_gt20_ce_entropy --use_loss_ce --use_loss_entropy --resume_best --epoch1 31
-python train_s2s.py --rank 2 --exp_name tm_gt20_ce_entropy --use_loss_ce --use_loss_entropy --resume_best --epoch1 31 --epoch2 39
+python train_s2s.py --exp_name kd3_step100_sample10_loop10 --num_timesteps 100 --sample_timesteps 10 --loop 10 --epoch1 100 --epoch2 200
 ```
-### S2S
-- eed_ce_w_en_kl: 基础版本，使用真实20单词，交叉熵监督训练
-python train_s2s.py --rank 2 --exp_name eed_ce_w_en_kl --use_loss_word --use_loss_ce --use_loss_entropy --use_loss_kl
-### s2s
-- ed: 使用三个模型的蒸馏结果训练。三层编码器图像特征，三层编码器生成单词，六层解码器生成最终描述。label使用蒸馏后句子和真实句子所有单词，有则为1，没有为0。交叉熵损失。
-
-- ed_labelweught: 使用三个模型的蒸馏结果训练。三层编码器图像特征，三层编码器生成单词，六层解码器生成最终描述。label使用蒸馏后句子和真实句子所有单词，出现一次加一。交叉熵损失。
-
-- ed_xe: 使用三个模型的蒸馏结果训练。三层编码器图像特征，三层编码器生成单词，六层解码器生成最终描述。仅使用交叉熵损失。
-
-- ed_1: 使用一个模型的蒸馏结果训练。三层编码器图像特征，三层编码器生成单词，六层解码器生成最终描述。label使用蒸馏后句子和真实句子所有单词，有则为1，没有为0。交叉熵损失。
-
-
 ## Acknowledge
 This repo is based on [M^2 Transformer](https://github.com/aimagelab/meshed-memory-transformer), [the-story-of-heads](https://github.com/lena-voita/the-story-of-heads) and [Transformer-Explainability](https://github.com/hila-chefer/Transformer-Explainability).

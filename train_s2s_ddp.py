@@ -45,7 +45,7 @@ def evaluate_loss(model, dataloader):
                 samples['mask'] = samples['mask'].to(device)
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
-                losses = model.module(samples, labels, tokens_kd, 0)
+                losses = model.module(samples, labels, tokens_kd)
 
                 loss = 0
                 for v in losses.values():
@@ -108,7 +108,7 @@ def train_xe(model, dataloader, optim, text_field):
             tokens_kd = tokens_kd.to(device)
             for t in range(loop):
                 with autocast():
-                    losses = model(samples, labels, tokens_kd, t)
+                    losses = model(samples, labels, tokens_kd)
                 # print(losses)
                 optim.zero_grad()
                 loss = 0

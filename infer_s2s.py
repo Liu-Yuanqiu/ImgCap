@@ -21,7 +21,7 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 test = False
 random.seed(1234)
 torch.manual_seed(1234)
@@ -62,24 +62,24 @@ if __name__ == '__main__':
 
     # Model and dataloaders
     model = Transformer(1024, len(text_field.vocab), text_field.vocab.stoi['<pad>'], \
-                        20, 100, 100,\
+                        20, 100, 25,\
                         N_en=3, N_wo=3, N_de=3).to(device)
     model.tensor_to(device)
     model_path = os.path.join("./ckpts", "s2s", "diffusion_loop_test1")
     fname = os.path.join(model_path, '%s_best.pth' % "s2s")
     assert os.path.exists(fname), "weight is not found"
     data = torch.load(fname)
-    torch.set_rng_state(data['torch_rng_state'])
-    torch.cuda.set_rng_state(data['cuda_rng_state'])
-    np.random.set_state(data['numpy_rng_state'])
-    random.setstate(data['random_rng_state'])
+    # torch.set_rng_state(data['torch_rng_state'])
+    # torch.cuda.set_rng_state(data['cuda_rng_state'])
+    # np.random.set_state(data['numpy_rng_state'])
+    # random.setstate(data['random_rng_state'])
     model.load_state_dict(data['state_dict'], strict=False)
     print('Resuming from epoch %d, best cider %f' % (
                 data['epoch'], data['best_cider']))
     model.eval()
-    scores = evaluate_metrics(model, loaders["valid"], text_field)
+    scores = evaluate_metrics(model, loaders["val_test"], text_field)
     print("Validation scores", scores)
-    scores = evaluate_metrics(model, loaders["test"], text_field)
+    scores = evaluate_metrics(model, loaders["test_test"], text_field)
     print("Test scores", scores)
     
     data4w = []
@@ -90,7 +90,7 @@ if __name__ == '__main__':
             samples['grid'] = samples['grid'].to(device)
             samples['mask'] = samples['mask'].to(device)
             with torch.no_grad():
-                _, logit = model(samples)
+                logit = model.infer(samples)
             _, out = torch.max(logit, -1)
             caps_gen = text_field.decode(out, join_words=True, deduplication=True)
             for i, (id, gen_i) in enumerate(zip(image_id, caps_gen)):
@@ -112,7 +112,7 @@ if __name__ == '__main__':
             samples['grid'] = samples['grid'].to(device)
             samples['mask'] = samples['mask'].to(device)
             with torch.no_grad():
-                _, logit = model(samples)
+                logit = model.infer(samples)
             _, out = torch.max(logit, -1)
             caps_gen = text_field.decode(out, join_words=True, deduplication=True)
             for i, (id, gen_i) in enumerate(zip(image_id, caps_gen)):
