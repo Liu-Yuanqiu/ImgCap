@@ -84,6 +84,9 @@ def evaluate_metrics(model, dataloader, text_field):
                 gts['%d_%d' % (it, i)] = gts_i
             pbar.update()
 
+            if args.test:
+                break
+
     gts = evaluation.PTBTokenizer.tokenize(gts)
     gen = evaluation.PTBTokenizer.tokenize(gen)
     scores, _ = evaluation.compute_scores(gts, gen)
@@ -261,9 +264,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='S2S')
     parser.add_argument('--rank', type=str, default='0')
     parser.add_argument('--exp_mode', type=str, default='s2s')
-    parser.add_argument('--exp_name', type=str, default='diffusion_step100_sample10_redis')
+    parser.add_argument('--exp_name', type=str, default='diffusion_step100_sample100_loop10')
     parser.add_argument('--log_folder', type=str, default='./logs')
     parser.add_argument('--data_path', type=str, default='../mscoco')
+    parser.add_argument('--data_origin', type=str, default='kd')
     parser.add_argument('--use_cache', action='store_true', default='True')
     parser.add_argument('--resume_last', action='store_true')
     parser.add_argument('--resume_best', action='store_true')
@@ -272,7 +276,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=96)
     parser.add_argument('--workers', type=int, default=12)
     parser.add_argument('--num_timesteps', type=int, default=100)
-    parser.add_argument('--sample_timesteps', type=int, default=10)
+    parser.add_argument('--sample_timesteps', type=int, default=100)
     parser.add_argument('--loop', type=int, default=10)
     parser.add_argument('--learning_rate', type=float, default=0.0001)
     parser.add_argument('--epoch1', type=int, default=100)
@@ -284,6 +288,9 @@ if __name__ == '__main__':
     parser.add_argument('--seq_len', type=int, default=20)
     parser.add_argument('--teacher_model_path', type=str, default='/s2s/tm_gt20_ce_entropy/s2s_best.pth')
     args = parser.parse_args()
+    if args.test:
+        args.batch_size = 4
+        args.workers = 2
     print(args)
     os.environ["CUDA_VISIBLE_DEVICES"] = args.rank
     device = torch.device('cuda')
@@ -362,7 +369,7 @@ if __name__ == '__main__':
             val_loss = 0.0
 
         # Validation scores
-        scores = evaluate_metrics(model, dataloaders['valid'], text_field)
+        scores = evaluate_metrics(model, dataloaders['val_test'], text_field)
         print("Validation scores", scores)
         val_cider = scores['CIDEr']
         writer.add_scalar('data/val_cider', val_cider, e)
@@ -372,7 +379,7 @@ if __name__ == '__main__':
         writer.add_scalar('data/val_rouge', scores['ROUGE'], e)
 
         # Test scores
-        scores = evaluate_metrics(model, dataloaders['test'], text_field)
+        scores = evaluate_metrics(model, dataloaders['test_test'], text_field)
         print("Test scores", scores)
         test_cider = scores['CIDEr']
         writer.add_scalar('data/test_cider', test_cider, e)

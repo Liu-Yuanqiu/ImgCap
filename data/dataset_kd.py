@@ -170,15 +170,22 @@ def id_path(root_path, img_id, use_cache):
             return os.path.join(root_path, "feature", "coco2014", "COCO_val2014_"+id_coco_imgpath(img_id))
 
 class COCO_KD:
-    def __init__(self, text_field, root_path, use_cache):
+    def __init__(self, text_field, root_path, use_cache, flag):
         self.train_samples = []
         self.val_samples = []
         self.val_test_samples = []
         self.test_test_samples = []
-
-        if os.path.exists(os.path.join(root_path, "cached_coco_train_kd3.json")):
-            self.train_samples = json.load(open(os.path.join(root_path, "cached_coco_train_kd3.json"), "r"))
-            self.val_samples = json.load(open(os.path.join(root_path, "cached_coco_val_kd3.json"), "r"))
+        if flag=="kd":
+            cached_train = "cached_coco_train.json"
+            cached_val = "cached_coco_val.json"
+            origin = "captions_transformer.json"
+        elif flag=="kd3":
+            cached_train = "cached_coco_train_kd3.json"
+            cached_val = "cached_coco_val_kd3.json"
+            origin = "captions_kd3.json"
+        if os.path.exists(os.path.join(root_path, cached_train)):
+            self.train_samples = json.load(open(os.path.join(root_path, cached_train), "r"))
+            self.val_samples = json.load(open(os.path.join(root_path, cached_val), "r"))
             self.val_test_samples = json.load(open(os.path.join(root_path, "cached_coco_val_test.json"), "r"))
             self.test_test_samples = json.load(open(os.path.join(root_path, "cached_coco_test_test.json"), "r"))
         else:
@@ -187,7 +194,7 @@ class COCO_KD:
             ids_val = load_txt(os.path.join(root_path, 'txt', 'coco_val_image_id.txt'))
             ids_test = load_txt(os.path.join(root_path, 'txt', 'coco_test_image_id.txt'))
             
-            samples = json.load(open(os.path.join(root_path, "annotations", 'captions_kd3.json'), "r"))
+            samples = json.load(open(os.path.join(root_path, "annotations", origin), "r"))
             val_ids = []
             test_ids = []
             for sam in samples:
@@ -215,8 +222,8 @@ class COCO_KD:
                         test_ids.append(img_id)
                 else:
                     raise ValueError("wrong image id")
-            json.dump(self.train_samples, open(os.path.join(root_path, "cached_coco_train_kd3.json"), "w"))
-            json.dump(self.val_samples, open(os.path.join(root_path, "cached_coco_val_kd3.json"), "w"))
+            json.dump(self.train_samples, open(os.path.join(root_path, cached_train), "w"))
+            json.dump(self.val_samples, open(os.path.join(root_path, cached_val), "w"))
             json.dump(self.val_test_samples, open(os.path.join(root_path, "cached_coco_val_test.json"), "w"))
             json.dump(self.test_test_samples, open(os.path.join(root_path, "cached_coco_test_test.json"), "w"))
 
@@ -227,7 +234,7 @@ def get_stop_words(text_field, stop_word_path):
         stop_word_ids.append(text_field.vocab.stoi[w])
     return stop_word_ids
     
-def build_coco_dataloaders(use_cache, data_path, batch_size, num_workers, device='cpu'):
+def build_coco_dataloaders(use_cache, data_path, batch_size, num_workers, flag='kd', device='cpu'):
     cfg_transform = {
         "size": [384, 640],
         "resize_name": "maxwh", # normal, minmax, maxwh; maxwh is computationally friendly for training
@@ -236,7 +243,7 @@ def build_coco_dataloaders(use_cache, data_path, batch_size, num_workers, device
     transform = get_transform(cfg_transform)
     use_cache = use_cache
     text_field = TextField(vocab_path=os.path.join(data_path, "txt", "coco_vocabulary.txt"))
-    coco = COCO_KD(text_field, data_path, use_cache)
+    coco = COCO_KD(text_field, data_path, use_cache, flag)
 
     stop_words = get_stop_words(text_field, os.path.join(data_path, "txt", "english"))
     # print(stop_words)
