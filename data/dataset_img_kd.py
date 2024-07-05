@@ -28,19 +28,18 @@ class DictionaryCollator:
 
 
         outputs = {}
-        if self.use_cache:
-            grid = [item[7] for item in batch]
-            mask = [item[8] for item in batch]
-            grid = torch.from_numpy(np.stack(grid, 0)) #.to(self.device)
-            mask = torch.from_numpy(np.stack(mask, 0)) #.to(self.device)
+        grid = [item[7] for item in batch]
+        mask = [item[8] for item in batch]
+        grid = torch.from_numpy(np.stack(grid, 0)) #.to(self.device)
+        mask = torch.from_numpy(np.stack(mask, 0)) #.to(self.device)
 
-            samples = {}
-            samples['grid'] = grid
-            samples['mask'] = mask
-            outputs['samples'] = samples
-        else:
-            imgs = [item[7] for item in batch]
-            outputs['samples'] = nested_tensor_from_tensor_list(imgs) #.to(self.device)
+        samples = {}
+        samples['grid'] = grid
+        samples['mask'] = mask
+        imgs = [item[9] for item in batch]
+        # samples['image'] = nested_tensor_from_tensor_list(imgs) #.to(self.device)
+        samples['image'] = torch.from_numpy(np.stack(imgs, 0))
+        outputs['samples'] = samples
 
         outputs['labels'] = labels
         outputs['labels_out'] = labels_out
@@ -101,12 +100,13 @@ class PairedDataset:
 
     def __getitem__(self, index):
         id = self.examples[index]['id']
-        filepath = self.examples[index]['image']
+        imh_path = self.examples[index]['img_path']
+        fea_path = self.examples[index]['fea_path']
         cap_kd = self.examples[index]['cap_kd']
         token_kd = self.examples[index]['token_kd']
         cap_gt = self.examples[index]['cap_gt']
         token_gt = self.examples[index]['token_gt']
-
+        
         max_len = max( max([len(x) for x in token_gt]), len(token_kd) )
         label = np.zeros((self.vocab_size), dtype=np.float32)
         for i in range(max_len):
@@ -139,18 +139,15 @@ class PairedDataset:
                 if wid not in [0, 1, 2]:
                     label_out[i][wid] = self.kd_score
 
-        if self.use_cache:
-            with np.load(filepath, allow_pickle=True) as data_grid:
-                grid = data_grid['grid']
-                grid = np.array(grid).astype('float32')
-                mask = data_grid['mask']
-                mask = np.array(mask).astype('bool')
-            return label, label_out, cap_kd, token_kd, cap_gt, token_gt, id, grid, mask
-        else:
-            img = Image.open(filepath).convert('RGB')
-            if self.transform is not None:
-                img = self.transform(img)
-            return label, label_out, cap_kd, token_kd, cap_gt, token_gt, id, img
+        with np.load(fea_path, allow_pickle=True) as data_grid:
+            grid = data_grid['grid']
+            grid = np.array(grid).astype('float32')
+            mask = data_grid['mask']
+            mask = np.array(mask).astype('bool')
+        img = Image.open(imh_path).convert('RGB')
+        if self.transform is not None:
+            img = self.transform(img)
+        return label, label_out, cap_kd, token_kd, cap_gt, token_gt, id, grid, mask, img
         
     def __len__(self):
         return len(self.examples)
@@ -159,15 +156,13 @@ def id_coco_imgpath(img_id, is_train=False):
     x = "0"*(12-len(str(img_id)))+str(img_id)+".jpg"
     return x
 
-def id_path(root_path, img_id, use_cache):
-    if use_cache:
-        return os.path.join(root_path, "feature", "swin_dert_grid", str(img_id)+".npz")
+def id_path(root_path, img_id):
+    fea_path = os.path.join(root_path, "feature", "swin_dert_grid", str(img_id)+".npz")
+    train_path = os.path.join(root_path, "feature", "coco2014", "train2014", "COCO_train2014_"+id_coco_imgpath(img_id))
+    if os.path.exists(train_path):
+        return train_path, fea_path
     else:
-        train_path = os.path.join(root_path, "feature", "coco2014", "train2014", "COCO_train2014_"+id_coco_imgpath(img_id))
-        if os.path.exists(train_path):
-            return train_path
-        else:
-            return os.path.join(root_path, "feature", "coco2014", "val2014", "COCO_val2014_"+id_coco_imgpath(img_id))
+        return os.path.join(root_path, "feature", "coco2014", "val2014", "COCO_val2014_"+id_coco_imgpath(img_id)), fea_path
 
 class COCO_KD:
     def __init__(self, text_field, stop_words, root_path, use_cache, flag):
@@ -179,16 +174,16 @@ class COCO_KD:
         self.gt_score = 1
         self.kd_score = 1
         if flag=="kd":
-            cached_train = "cached_coco_train.json"
-            cached_val = "cached_coco_val.json"
-            cached_val_test = "cached_coco_val_test.json"
-            cached_test_test = "cached_coco_test_test.json"
+            cached_train = "cached_coco_img_train.json"
+            cached_val = "cached_coco_img_val.json"
+            cached_val_test = "cached_coco_img_val_test.json"
+            cached_test_test = "cached_coco_img_test_test.json"
             origin = "captions_transformer.json"
         elif flag=="kd3":
-            cached_train = "cached_coco_train_kd3.json"
-            cached_val = "cached_coco_val_kd3.json"
-            cached_val_test = "cached_coco_val_test.json"
-            cached_test_test = "cached_coco_test_test.json"
+            cached_train = "cached_coco_img_train_kd3.json"
+            cached_val = "cached_coco_img_val_kd3.json"
+            cached_val_test = "cached_coco_img_val_test.json"
+            cached_test_test = "cached_coco_img_test_test.json"
             origin = "captions_kd3.json"
         if os.path.exists(os.path.join(root_path, cached_train)):
             self.train_samples = json.load(open(os.path.join(root_path, cached_train), "r"))
@@ -209,12 +204,12 @@ class COCO_KD:
                 cap_kd = sam['gen']
                 cap_gt = sam['gts']
                 
-                filepath = id_path(root_path, img_id, use_cache)
+                img_path, fea_path = id_path(root_path, img_id)
                 token_kd = [self.text_field.vocab.stoi[w] for w in self.text_field.preprocess(cap_kd)]
                 token_kd = token_kd + [text_field.vocab.stoi['<eos>']]
                 token_gt = [[self.text_field.vocab.stoi[w] for w in t] for t in self.text_field.preprocess(cap_gt)]
                 token_gt = [t+[text_field.vocab.stoi['<eos>']] for t in token_gt]
-                s = {"id":img_id, "image": filepath, "cap_kd":cap_kd, "token_kd": token_kd, "cap_gt":cap_gt, "token_gt": token_gt}
+                s = {"id":img_id, "img_path": img_path, "fea_path": fea_path, "cap_kd":cap_kd, "token_kd": token_kd, "cap_gt":cap_gt, "token_gt": token_gt}
                 
                 if img_id in ids_train:
                     self.train_samples.append(s)
@@ -243,8 +238,9 @@ def get_stop_words(text_field, stop_word_path):
     
 def build_coco_dataloaders(use_cache, data_path, batch_size, num_workers, flag='kd', device='cpu'):
     cfg_transform = {
-        "size": [384, 640],
-        "resize_name": "maxwh", # normal, minmax, maxwh; maxwh is computationally friendly for training
+        # "size": [384, 640],
+        "size": [224, 224],
+        "resize_name": "normal", # normal, minmax, maxwh; maxwh is computationally friendly for training
         "randaug": True
         }
     transform = get_transform(cfg_transform)
@@ -260,12 +256,11 @@ def build_coco_dataloaders(use_cache, data_path, batch_size, num_workers, flag='
         'val_test': PairedDataset(coco.val_test_samples, transform['valid'], use_cache, len(text_field.vocab), stop_words),
         'test_test': PairedDataset(coco.test_test_samples, transform['valid'], use_cache, len(text_field.vocab), stop_words),
     }
-    del coco
-    # label = datasets['train'].__getitem__(120)[6]
+    # sample = datasets['train'].__getitem__(120)[9]
     # for i in range(label.shape[0]):
     #     l = label[i]
     #     print(l.sum(), end=" ")
-    # print(label.shape)
+    # print(sample.shape)
     collators = {
         'train': PairedCollator(use_cache, device=device),
         'valid': PairedCollator(use_cache, device=device),

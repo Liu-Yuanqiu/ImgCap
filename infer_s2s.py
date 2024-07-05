@@ -62,10 +62,10 @@ if __name__ == '__main__':
 
     # Model and dataloaders
     model = Transformer(1024, len(text_field.vocab), text_field.vocab.stoi['<pad>'], \
-                        20, 100, 25,\
+                        20, 100, 100,\
                         N_en=3, N_wo=3, N_de=3).to(device)
     model.tensor_to(device)
-    model_path = os.path.join("./ckpts", "s2s", "diffusion_loop_test1")
+    model_path = os.path.join("./ckpts", "s2s", "kd3_step100_sample10_loop10")
     fname = os.path.join(model_path, '%s_best.pth' % "s2s")
     assert os.path.exists(fname), "weight is not found"
     data = torch.load(fname)

@@ -46,5 +46,17 @@ python train_s2s.py --exp_name kd3_step100_sample100_loop10 --num_timesteps 100 
 ```
 python train_s2s.py --exp_name kd3_step100_sample10_loop10 --num_timesteps 100 --sample_timesteps 10 --loop 10 --epoch1 100 --epoch2 200
 ```
+
+## kd_step10_sample10_loop10_new
+```
+训练过程中从v得到初始值，作为outw生成句子
+python train_s2s.py --rank 1 --exp_name kd_step10_sample10_loop10_new --num_timesteps 10 --sample_timesteps 10 --loop 10 --epoch1 100 --epoch2 200
+```
+
+## img_kd_step10_sample10_loop10
+```
+outi和outw都从扩散网络中得到
+python train_e2es2s.py --rank 2 --exp_name img_kd_step10_sample10_loop10 --num_timesteps 10 --sample_timesteps 10 --loop 10 --epoch1 100 --epoch2 200
+```
 ## Acknowledge
 This repo is based on [M^2 Transformer](https://github.com/aimagelab/meshed-memory-transformer), [the-story-of-heads](https://github.com/lena-voita/the-story-of-heads) and [Transformer-Explainability](https://github.com/hila-chefer/Transformer-Explainability).

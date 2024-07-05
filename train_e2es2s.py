@@ -1,10 +1,9 @@
 import random
 import evaluation
 from evaluation import Cider
-from data.dataset_kd import build_coco_dataloaders
+from data.dataset_img_kd import build_coco_dataloaders
 #from models.detector import build_detector
-from models.s2s.transformer import Transformer
-from models.s2s.transformer_word import Transformer as Word
+from models.e2es2s.transformer import Transformer
 from models.losses import MLCrossEntropy, FocalLossWithLogitsNegLoss, MultiClassCrossEntropy
 from pycocotools.coco import COCO
 import torch
@@ -40,6 +39,7 @@ def evaluate_loss(model, dataloader):
                 image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
                 samples['grid'] = samples['grid'].to(device)
                 samples['mask'] = samples['mask'].to(device)
+                samples['image'] = samples['image'].to(device)
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
                 losses = model(samples, labels, tokens_kd)
@@ -69,10 +69,8 @@ def evaluate_metrics(model, dataloader, text_field):
     gts = {}
     with tqdm(desc='Epoch %d - evaluation' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
-            image_id, samples, labels, caps_gt = batch['image_id'], batch['samples'], batch['labels'], batch['caps_gt']
-            samples['grid'] = samples['grid'].to(device)
-            samples['mask'] = samples['mask'].to(device)
-            labels = labels.to(device)
+            image_id, samples, caps_gt = batch['image_id'], batch['samples'], batch['caps_gt']
+            samples['image'] = samples['image'].to(device)
             with torch.no_grad():
                 logit = model.infer(samples)
             
@@ -102,6 +100,8 @@ def train_xe(model, dataloader, optim, text_field):
             image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
             samples['grid'] = samples['grid'].to(device)
             samples['mask'] = samples['mask'].to(device)
+            samples['image'] = samples['image'].to(device)
+            # print(samples['image'].shape) [bs, 3, 224, 224]
             labels = labels.to(device)
             tokens_kd = tokens_kd.to(device)
             for i in range(loop):
@@ -268,7 +268,7 @@ if __name__ == '__main__':
     parser.add_argument('--log_folder', type=str, default='./logs')
     parser.add_argument('--data_path', type=str, default='../mscoco')
     parser.add_argument('--data_origin', type=str, default='kd')
-    parser.add_argument('--use_cache', action='store_true', default='True')
+    parser.add_argument('--use_cache', action='store_true', default=False)
     parser.add_argument('--resume_last', action='store_true')
     parser.add_argument('--resume_best', action='store_true')
     parser.add_argument('--test', action='store_true')

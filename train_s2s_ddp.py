@@ -294,6 +294,10 @@ if __name__ == '__main__':
     parser.add_argument('--seq_len', type=int, default=20)
     parser.add_argument('--teacher_model_path', type=str, default='/s2s/tm_gt20_ce_entropy/s2s_best.pth')
     args = parser.parse_args()
+    if args.test:
+        args.batch_size = 4
+        args.workers = 2
+        args.exp_name = "test"
     print(args)
     dist.init_process_group(backend='nccl')
     # os.environ["CUDA_VISIBLE_DEVICES"] = args.rank

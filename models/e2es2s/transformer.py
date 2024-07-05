@@ -15,19 +15,19 @@ class Transformer(nn.Module):
                 N_en=3, N_wo=3, N_de=3, \
                 d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1):
         super(Transformer, self).__init__()
-        self.image_emb = nn.Sequential( 
+        self.fea_emb = nn.Sequential( 
             nn.Linear(feat_dim, d_model), 
             nn.ReLU(), 
             nn.Dropout(p=0.1), 
             nn.LayerNorm(d_model))
-        self.encoder = nn.ModuleList([EncoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_en)])
-        # self.img2word = nn.Linear(d_model, d_model)
-        self.encoderw = ModuleList([DiffusionDecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_wo)])    
-        self.decoder1 = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_de)])    
-        # self.decoder2 = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout)  for _ in range(N_de)])
+        self.img_emb = nn.Sequential(
+            PatchEmbed(),
+            nn.Linear(768, d_model))
+        self.encoder_i = nn.ModuleList([DiffusionDecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_en)])
+        self.encoder_w = nn.ModuleList([DiffusionDecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_wo)])    
+        self.decoder = nn.ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_de)])
         self.word_emb = WordEmbedding(vocab_size, d_model, padding_idx)
         self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
-        # self.pos_emb_freeze = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=True)
         self.vocab_size = vocab_size
         self.topk = topk
         self.dim = d_model
@@ -87,20 +87,38 @@ class Transformer(nn.Module):
             extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
     
-    def forward(self, images, labels, tokens_kd):
-        gri_feat, gri_mask = images['grid'], images['mask']
-        gri_feat = self.image_emb(gri_feat)
-
+    def forward(self, samples, labels, tokens_kd):
+        images, gri_feat, grid_mask = samples["image"], samples["grid"], samples["mask"]
+        gri_feat = self.fea_emb(gri_feat)
+        images = self.img_emb(images)
+        
         bs = gri_feat.shape[0]
         device = gri_feat.device
 
-        enc_img = gri_feat
-        for l in self.encoder:
-            enc_img = l(enc_img, enc_img, enc_img, gri_mask)
-
         losses = {}
+        ################# diffusion word ####################
+        x_start = self.normalize(gri_feat)
+        noise = torch.randn_like(x_start)
+        batched_times = torch.randint(0, self.num_timesteps, (bs, ), device=device)
+        # batched_times = torch.full((bs,), t, device = device, dtype = torch.long)
+        x = self.q_sample(x_start=x_start, t=batched_times, noise=noise)
+        outdi = x.to(torch.float32)
+        t_emb = self.timestep_emb(batched_times)
+        for l in self.encoder_i:
+            outdi = l(outdi, t_emb, images)
 
-        ################# diffusion ####################
+        if self.objective == 'pred_noise':
+            target = noise
+        elif self.objective == 'pred_x0':
+            target = x_start
+        elif self.objective == 'pred_v':
+            v = self.predict_v(x_start, batched_times, noise)
+            target = v
+        loss_i = F.mse_loss(outdi, target)
+        losses.update({"img": loss_i})
+        outi = self.predict_start_from_v(noise, batched_times, outdi)
+        outi = self.unnormalize(outi)
+        ################# diffusion word ####################
         _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
         x_start = self.word_emb.id_embed(gt_topk)
         x_start = self.normalize(x_start)
@@ -110,8 +128,8 @@ class Transformer(nn.Module):
         x = self.q_sample(x_start=x_start, t=batched_times, noise=noise)
         outwd = x.to(torch.float32)
         t_emb = self.timestep_emb(batched_times)
-        for l in self.encoderw:
-            outwd = l(outwd, t_emb, enc_img, gri_mask)
+        for l in self.encoder_w:
+            outwd = l(outwd, t_emb, images)
 
         if self.objective == 'pred_noise':
             target = noise
@@ -123,7 +141,7 @@ class Transformer(nn.Module):
         loss_w = F.mse_loss(outwd, target)
         losses.update({"word": loss_w})
         outw = self.predict_start_from_v(noise, batched_times, outwd)
-        outw = self.unnormalize(outw)
+        outw = self.normalize(outw)
         # if t>0:
         #     return losses
         ##############################################
@@ -163,14 +181,14 @@ class Transformer(nn.Module):
         # losses.update({"word": loss_w.mean()})
 
         # outw = self.unnormalize(x)
-        pos_indx = torch.arange(1, self.topk + 1, device=enc_img.device).view(1, -1)
+        pos_indx = torch.arange(1, self.topk + 1, device=device).view(1, -1)
         if self.K_add_word:
-            out = outw + self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
+            out = outw + self.pos_emb(pos_indx).repeat(bs, 1, 1)
             outw = out
         else:
-            out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
-        for l in self.decoder1:
-            out = l(out, outw, enc_img, gri_mask)
+            out = self.pos_emb(pos_indx).repeat(bs, 1, 1)
+        for l in self.decoder:
+            out = l(out, outw, outi)
         
         # ce
         logit_d1 = self.word_emb.fc(out)
@@ -202,15 +220,83 @@ class Transformer(nn.Module):
             extract(self.sqrt_one_minus_alphas_cumprod, t, x_t.shape) * v
         )
     
-    def infer(self, images):
-        gri_feat, gri_mask = images['grid'], images['mask']
-        gri_feat = self.image_emb(gri_feat)
+    def infer(self, samples):
+        images = samples["image"]
+        images = self.img_emb(images)
+        bs, device = images.shape[0], images.device
 
-        enc_img = gri_feat
-        for l in self.encoder:
-            enc_img = l(enc_img, enc_img, enc_img, gri_mask)
+        x = torch.randn((bs, 60, self.dim), device=device)
+        x_start = None
+        if self.is_ddim_sampling:
+            times = torch.linspace(-1, self.num_timesteps - 1, steps = self.sampling_timesteps + 1)   # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps
+            times = list(reversed(times.int().tolist()))
+            time_pairs = list(zip(times[:-1], times[1:]))
+            for time, time_next in time_pairs:
+                batched_times = torch.full((bs,), time, device = device, dtype = torch.long)
+                batched_times_emb = self.timestep_emb(batched_times)
+                model_output = x
+                for l in self.encoder_i:
+                    model_output = l(model_output, batched_times_emb, images)
+                if self.objective == 'pred_noise':
+                    pred_noise = model_output
+                    x_start = self.predict_start_from_noise(x, batched_times, pred_noise)
+                elif self.objective == 'pred_x0':
+                    x_start = model_output
+                    pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
+                elif self.objective == 'pred_v':
+                    v = model_output
+                    x_start = self.predict_start_from_v(x, batched_times, v)
+                    pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
+                
+                if time_next < 0:
+                    x = x_start
+                    continue
 
-        bs, device = enc_img.shape[0], enc_img.device
+                alpha = self.alphas_cumprod[time]
+                alpha_next = self.alphas_cumprod[time_next]
+
+                sigma = self.ddim_sampling_eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
+                c = (1 - alpha_next - sigma ** 2).sqrt()
+
+                noise = torch.randn_like(x)
+
+                x = x_start * alpha_next.sqrt() + \
+                    c * pred_noise + \
+                    sigma * noise
+        else:
+            for t in reversed(range(0, self.num_timesteps)):
+                batched_times = torch.full((bs,), t, device = device, dtype = torch.long)
+                    
+                batched_times_emb = self.timestep_emb(batched_times)
+                model_output = x
+                for l in self.encoder_i:
+                    model_output = l(model_output, batched_times_emb, images)
+
+                if self.objective == 'pred_noise':
+                    pred_noise = model_output
+                    x_start = self.predict_start_from_noise(x, batched_times, pred_noise)
+                elif self.objective == 'pred_x0':
+                    x_start = model_output
+                    pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
+
+                elif self.objective == 'pred_v':
+                    v = model_output
+                    x_start = self.predict_start_from_v(x, batched_times, v)
+                    pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
+                
+                x_start.clamp_(-1., 1.)
+                
+                model_mean = (
+                    extract(self.posterior_mean_coef1, batched_times, x.shape) * x_start +
+                    extract(self.posterior_mean_coef2, batched_times, x.shape) * x
+                )
+                # posterior_variance = extract(self.posterior_variance, batched_times, x.shape)
+                model_log_variance = extract(self.posterior_log_variance_clipped, batched_times, x.shape)
+                noise = torch.randn_like(x) if t > 0 else 0. # no noise if t == 0
+                x = model_mean + (0.5 * model_log_variance).exp() * noise
+        outi = self.unnormalize(x)
+
+        
         x = torch.randn((bs, self.topk, self.dim), device=device)
         x_start = None
         if self.is_ddim_sampling:
@@ -221,8 +307,8 @@ class Transformer(nn.Module):
                 batched_times = torch.full((bs,), time, device = device, dtype = torch.long)
                 batched_times_emb = self.timestep_emb(batched_times)
                 model_output = x
-                for l in self.encoderw:
-                    model_output = l(model_output, batched_times_emb, enc_img, gri_mask)
+                for l in self.encoder_w:
+                    model_output = l(model_output, batched_times_emb, images)
                 if self.objective == 'pred_noise':
                     pred_noise = model_output
                     x_start = self.predict_start_from_noise(x, batched_times, pred_noise)
@@ -256,8 +342,8 @@ class Transformer(nn.Module):
                     
                 batched_times_emb = self.timestep_emb(batched_times)
                 model_output = x
-                for l in self.encoderw:
-                    model_output = l(model_output, batched_times_emb, enc_img, gri_mask)
+                for l in self.encoder_w:
+                    model_output = l(model_output, batched_times_emb, images)
 
                 if self.objective == 'pred_noise':
                     pred_noise = model_output
@@ -283,14 +369,14 @@ class Transformer(nn.Module):
                 x = model_mean + (0.5 * model_log_variance).exp() * noise
         outw = self.unnormalize(x)
 
-        pos_indx = torch.arange(1, self.topk + 1, device=enc_img.device).view(1, -1)
+        pos_indx = torch.arange(1, self.topk + 1, device=device).view(1, -1)
         if self.K_add_word:
-            out = outw + self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
+            out = outw + self.pos_emb(pos_indx).repeat(bs, 1, 1)
             outw = out
         else:
-            out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
-        for l in self.decoder1:
-            out = l(out, outw, enc_img, gri_mask)
+            out = self.pos_emb(pos_indx).repeat(bs, 1, 1)
+        for l in self.decoder:
+            out = l(out, outw, outi)
         
         out = self.word_emb.fc(out)
         return F.log_softmax(out, dim=-1)
@@ -365,6 +451,52 @@ class Transformer(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
+class PatchEmbed(nn.Module):
+    """
+    Image --> Patch Embedding --> Linear Proj --> Pos Embedding
+    Image size -> [224,224,3]
+    Patch size -> 16*16
+    Patch num -> (224^2)/(16^2)=196
+    Patch dim -> 16*16*3 =768
+    Patch Embedding: [224,224,3] -> [196,768]
+    Linear Proj: [196,768] -> [196,768]
+ 	Positional Embedding: [197,768] -> [196,768]
+    """
+    def __init__(self, img_size=224, patch_size=16, in_c=3, embed_dim=768, norm_layer=None):
+        """
+        Args:
+            img_size: 默认参数224
+            patch_size: 默认参数是16
+            in_c: 输入的通道数
+            embed_dim: 16*16*3 = 768
+            norm_layer: 是否使用norm层，默认为否
+        """
+        super().__init__()
+        img_size = (img_size, img_size) # -> img_size = (224,224)
+        patch_size = (patch_size, patch_size) # -> patch_size = (16,16)
+        self.img_size = img_size # -> (224,224)
+        self.patch_size = patch_size # -> (16,16)
+        self.grid_size = (img_size[0] // patch_size[0], img_size[1] // patch_size[1]) # -> grid_size = (14,14)
+        self.num_patches = self.grid_size[0] * self.grid_size[1] # -> num_patches = 196
+        # Patch+linear proj的这个操作 [224,224,3] --> [14,14,768]
+        self.proj = nn.Conv2d(in_c, embed_dim, kernel_size=patch_size, stride=patch_size)
+        # 判断是否有norm_layer层，要是没有不改变输入
+        self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
+
+    def forward(self, x):
+        # 计算各个维度的大小
+        B, C, H, W = x.shape
+        assert H == self.img_size[0] and W == self.img_size[1], \
+            f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
+        
+        # flatten: [B, C, H, W] -> [B, C, HW], flatten(2)代表的是从2位置开始展开
+        # eg: [1,3,224,224] --> [1,768,14,14] -flatten->[1,768,196]
+        # transpose: [B, C, HW] -> [B, HW, C]
+        # eg: [1,768,196] -transpose-> [1,196,768]
+        x = self.proj(x).flatten(2).transpose(1, 2)
+        x = self.norm(x)
+        return x
+    
 class WordEmbedding(nn.Module):
     def __init__(self, vocab_size, dim, padding_idx):
         super(WordEmbedding, self).__init__()
@@ -494,7 +626,7 @@ class DecoderLayer(nn.Module):
         self.dropout3 = nn.Dropout(dropout)
         self.lnorm3 = nn.LayerNorm(d_model)
 
-    def forward(self, input, input1, enc_output, mask_enc_att, mask=None, self_att_weight=None):
+    def forward(self, input, input1, enc_output, mask_enc_att=None, mask=None, self_att_weight=None):
         # MHA+AddNorm
         self_att = self.self_att(input, input1, input1, mask, self_att_weight)
         self_att = self.lnorm1(input + self.dropout1(self_att))
@@ -520,7 +652,7 @@ class DiffusionDecoderLayer(nn.Module):
             nn.Linear(d_model, 9 * d_model, bias=True)
         )
 
-    def forward(self, x, c, vis, vis_mask):
+    def forward(self, x, c, vis, vis_mask=None):
         shift_msa, scale_msa, gate_msa, shift_mca, scale_mca, gate_mca, shift_pf, scale_pf, gate_pf = self.adaLN_modulation(c).chunk(9, dim=1)
         input = modulate(self.norm1(x), shift_msa, scale_msa)
         x = x + gate_msa.unsqueeze(1) * self.self_att(input, input, input)
