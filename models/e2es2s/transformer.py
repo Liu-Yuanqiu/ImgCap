@@ -22,7 +22,7 @@ class Transformer(nn.Module):
             nn.LayerNorm(d_model))
         self.img_emb = nn.Sequential(
             PatchEmbed(),
-            nn.Linear(768, d_model))
+            nn.Linear(768, feat_dim))
         self.encoder_i = nn.ModuleList([DiffusionDecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_en)])
         self.encoder_w = nn.ModuleList([DiffusionDecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_wo)])    
         self.decoder = nn.ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_de)])
@@ -89,7 +89,7 @@ class Transformer(nn.Module):
     
     def forward(self, samples, labels, tokens_kd):
         images, gri_feat, grid_mask = samples["image"], samples["grid"], samples["mask"]
-        gri_feat = self.fea_emb(gri_feat)
+        # gri_feat = self.fea_emb(gri_feat)
         images = self.img_emb(images)
         
         bs = gri_feat.shape[0]
@@ -129,7 +129,7 @@ class Transformer(nn.Module):
         outwd = x.to(torch.float32)
         t_emb = self.timestep_emb(batched_times)
         for l in self.encoder_w:
-            outwd = l(outwd, t_emb, images)
+            outwd = l(outwd, t_emb, outi)
 
         if self.objective == 'pred_noise':
             target = noise
