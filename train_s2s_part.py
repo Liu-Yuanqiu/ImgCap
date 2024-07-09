@@ -4,7 +4,6 @@ from evaluation import Cider
 from data.dataset_kd import build_coco_dataloaders
 #from models.detector import build_detector
 from models.s2s.transformer import Transformer
-from models.s2s.transformer_word import Transformer as Word
 from models.losses import MLCrossEntropy, FocalLossWithLogitsNegLoss, MultiClassCrossEntropy
 from pycocotools.coco import COCO
 import torch
@@ -12,6 +11,8 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR, ExponentialLR, ReduceLROnPlateau
 from torch.nn import NLLLoss
 from torch.nn import functional as F
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 import warnings
 warnings.filterwarnings("ignore")
 from tqdm import tqdm
@@ -34,7 +35,7 @@ def evaluate_loss(model, dataloader):
     # Validation loss
     model.eval()
     running_loss = .0
-    with tqdm(desc='Epoch %d - validation' % e, unit='it', total=len(dataloader)) as pbar:
+    with tqdm(desc='Epoch %d - validation' % e, unit='it', total=len(dataloader), disable=args.local_rank!=0) as pbar:
         with torch.no_grad():
             for it, batch in enumerate(dataloader):
                 image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
@@ -42,7 +43,7 @@ def evaluate_loss(model, dataloader):
                 samples['mask'] = samples['mask'].to(device)
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
-                losses = model(samples, labels, tokens_kd)
+                losses = model.module.forward_encoderw(samples, labels)
 
                 loss = 0
                 for v in losses.values():
@@ -74,7 +75,7 @@ def evaluate_metrics(model, dataloader, text_field):
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             with torch.no_grad():
-                logit = model.infer(samples)
+                logit = model.module.infer(samples)
             
             _, out = torch.max(logit, -1)
             caps_gen = text_field.decode(out, join_words=False, deduplication=True)
@@ -97,15 +98,16 @@ def train_xe(model, dataloader, optim, text_field):
     model.train()
     loop = args.loop
     running_loss = .0
-    with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)*loop) as pbar:
-        for it, batch in enumerate(dataloader):
-            image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
-            samples['grid'] = samples['grid'].to(device)
-            samples['mask'] = samples['mask'].to(device)
-            labels = labels.to(device)
-            tokens_kd = tokens_kd.to(device)
-            for i in range(loop):
-                losses = model(samples, labels, tokens_kd)
+    with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)*loop, disable=args.local_rank!=0) as pbar:
+        for i in range(loop):
+            for it, batch in enumerate(dataloader):
+                image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
+                samples['grid'] = samples['grid'].to(device)
+                samples['mask'] = samples['mask'].to(device)
+                labels = labels.to(device)
+                tokens_kd = tokens_kd.to(device)
+            
+                losses = model.module.forward_encoderw(samples, labels)
                 # print(losses)
                 optim.zero_grad()
                 loss = 0
@@ -120,11 +122,11 @@ def train_xe(model, dataloader, optim, text_field):
                 for k in losses:
                     item = '%.4f' % losses[k].item()
                     losses_info[k] = item
-                pbar.set_postfix(loss=running_loss / (it*loop + i + 1), losses=losses_info)
+                pbar.set_postfix(loss=running_loss / (i*len(dataloader) + it + 1), losses=losses_info)
                 pbar.update()
 
-            if args.test:
-                break
+                if args.test:
+                    break
     
     loss = running_loss / len(dataloader)
     return loss
@@ -260,8 +262,13 @@ def train_scst1(model, dataloader, optim, cider, text_field):
     reward_baseline = running_reward_baseline / len(dataloader)
     return loss, reward, reward_baseline
 
+def pprint(msg):
+    if args.local_rank == 0:
+        print(msg)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='S2S')
+    parser.add_argument('--local_rank', type=int, default=-1)
     parser.add_argument('--rank', type=str, default='0')
     parser.add_argument('--exp_mode', type=str, default='s2s')
     parser.add_argument('--exp_name', type=str, default='diffusion_step100_sample100_loop10')
@@ -273,8 +280,8 @@ if __name__ == '__main__':
     parser.add_argument('--resume_best', action='store_true')
     parser.add_argument('--test', action='store_true')
 
-    parser.add_argument('--batch_size', type=int, default=96)
-    parser.add_argument('--workers', type=int, default=12)
+    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--workers', type=int, default=16)
     parser.add_argument('--num_timesteps', type=int, default=100)
     parser.add_argument('--sample_timesteps', type=int, default=100)
     parser.add_argument('--loop', type=int, default=10)
@@ -286,27 +293,49 @@ if __name__ == '__main__':
     parser.add_argument('--layer_num', type=int, default=3)
     parser.add_argument('--feat_dim', type=int, default=1024)
     parser.add_argument('--seq_len', type=int, default=20)
-    parser.add_argument('--teacher_model_path', type=str, default='/s2s/tm_gt20_ce_entropy/s2s_best.pth')
+    parser.add_argument('--teacher_model_path', type=str, default='/s2s/kd_pe_gt20/s2s_best.pth')
+    parser.add_argument('--train_part', type=str, default='encoderw')
     args = parser.parse_args()
     if args.test:
         args.batch_size = 4
         args.workers = 2
         args.exp_name = "test"
-    print(args)
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.rank
-    device = torch.device('cuda')
+    pprint(args)
+    dist.init_process_group(backend='nccl')
+    # os.environ["CUDA_VISIBLE_DEVICES"] = args.rank
+    device = torch.device('cuda', args.local_rank)
     multiprocessing.set_start_method('spawn')
 
     writer = SummaryWriter(log_dir=os.path.join(args.log_folder, args.exp_mode, args.exp_name))
 
     dataloaders, text_field = build_coco_dataloaders(args.use_cache, args.data_path, args.batch_size, args.workers, flag=args.data_origin)
     cider_train = Cider()
-    print(text_field.vocab.stoi['<bos>'])
-    print(text_field.vocab.stoi['<pad>'])
+    pprint(text_field.vocab.stoi['<bos>'])
+    pprint(text_field.vocab.stoi['<pad>'])
 
     model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.seq_len, args.num_timesteps, args.sample_timesteps,\
                         N_en=args.layer_num, N_wo=args.layer_num, N_de=args.layer_num).to(device)
     model.tensor_to(device)
+
+    if os.path.exists(os.path.join("./ckpts", "s2s", "kd_pe_gt20", "s2s_best.pth")):
+        data = torch.load(os.path.join("./ckpts", "s2s", "kd_pe_gt20", "s2s_best.pth"))
+        # torch.set_rng_state(data['torch_rng_state'])
+        # torch.cuda.set_rng_state(data['cuda_rng_state'])
+        # np.random.set_state(data['numpy_rng_state'])
+        # random.setstate(data['random_rng_state'])
+        # teacher_model.load_state_dict(data['state_dict'], strict=False)
+        # print('Teacher Model Resuming, best cider %f' % (data['best_cider']))
+
+        if args.train_part=="encoderw":
+            teacher_model_dict = data['state_dict']
+            model_dict = {k:v for k,v in teacher_model_dict.items() if "encoderw" not in k and "timestep_emb" not in k}
+            model.load_state_dict(model_dict, strict=False)
+            for n, p in model.named_parameters():
+                if "encoderw" not in n and "timestep_emb" not in n:
+                    p.requires_grad = False
+    # for n, p in model.named_parameters():
+    #     print(n, p.requires_grad)
+    model = DDP(model, device_ids=[args.local_rank], output_device=args.local_rank, find_unused_parameters=True)
     def lambda_lr(s):
         base_lr = args.learning_rate
         if s <= 3:
@@ -319,7 +348,7 @@ if __name__ == '__main__':
             lr = base_lr * 0.2 * 0.2
         return lr
     # Initial conditions
-    optim = Adam(model.parameters(), lr=1, betas=(0.9, 0.98))
+    optim = Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1, betas=(0.9, 0.98))
     scheduler = LambdaLR(optim, lambda_lr)
 
     best_cider = .0
@@ -347,84 +376,88 @@ if __name__ == '__main__':
             start_epoch = data['epoch'] + 1
             best_cider = data['best_cider']
             patience = data['patience']
-            print('Resuming from epoch %d, patience %d, validation loss %f, and best cider %f' % (
+            pprint('Resuming from epoch %d, patience %d, validation loss %f, and best cider %f' % (
                 data['epoch'], data['patience'], data['val_loss'], data['best_cider']))
 
-    print("Training starts")
+    
+    pprint("Training starts")
     for e in range(start_epoch, start_epoch + 100):
-        print("Epoch: %d, Learning Rate: %f" % (e, optim.param_groups[0]['lr']))
+        pprint("Epoch: %d, Learning Rate: %f" % (e, optim.param_groups[0]['lr']))
         if not use_rl:
             train_loss = train_xe(model, dataloaders['train'], optim, text_field)
-            writer.add_scalar('data/train_loss', train_loss, e)
+            if args.local_rank == 0:
+                writer.add_scalar('data/train_loss', train_loss, e)
         else:
             train_loss, reward, reward_baseline = train_scst(model, dataloaders['train'], optim, cider_train, text_field)
-            writer.add_scalar('data/train_loss', train_loss, e)
-            writer.add_scalar('data/reward', reward, e)
-            writer.add_scalar('data/reward_baseline', reward_baseline, e)
+            # writer.add_scalar('data/train_loss', train_loss, e)
+            # writer.add_scalar('data/reward', reward, e)
+            # writer.add_scalar('data/reward_baseline', reward_baseline, e)
             
         if not use_rl:
             # Validation loss
             val_loss = evaluate_loss(model, dataloaders['valid'])
-            writer.add_scalar('data/val_loss', val_loss, e)
+            if args.local_rank == 0:
+                writer.add_scalar('data/val_loss', val_loss, e)
         else:
             val_loss = 0.0
+        dist.barrier()
+        if args.local_rank==0:
+            # Validation scores
+            scores = evaluate_metrics(model, dataloaders['val_test'], text_field)
+            print("Validation scores", scores)
+            val_cider = scores['CIDEr']
+            writer.add_scalar('data/val_cider', val_cider, e)
+            writer.add_scalar('data/val_bleu1', scores['BLEU'][0], e)
+            writer.add_scalar('data/val_bleu4', scores['BLEU'][3], e)
+            writer.add_scalar('data/val_meteor', scores['METEOR'], e)
+            writer.add_scalar('data/val_rouge', scores['ROUGE'], e)
 
-        # Validation scores
-        scores = evaluate_metrics(model, dataloaders['val_test'], text_field)
-        print("Validation scores", scores)
-        val_cider = scores['CIDEr']
-        writer.add_scalar('data/val_cider', val_cider, e)
-        writer.add_scalar('data/val_bleu1', scores['BLEU'][0], e)
-        writer.add_scalar('data/val_bleu4', scores['BLEU'][3], e)
-        writer.add_scalar('data/val_meteor', scores['METEOR'], e)
-        writer.add_scalar('data/val_rouge', scores['ROUGE'], e)
+            # Test scores
+            scores = evaluate_metrics(model, dataloaders['test_test'], text_field)
+            print("Test scores", scores)
+            test_cider = scores['CIDEr']
+            writer.add_scalar('data/test_cider', test_cider, e)
+            writer.add_scalar('data/test_bleu1', scores['BLEU'][0], e)
+            writer.add_scalar('data/test_bleu4', scores['BLEU'][3], e)
+            writer.add_scalar('data/test_meteor', scores['METEOR'], e)
+            writer.add_scalar('data/test_rouge', scores['ROUGE'], e)
 
-        # Test scores
-        scores = evaluate_metrics(model, dataloaders['test_test'], text_field)
-        print("Test scores", scores)
-        test_cider = scores['CIDEr']
-        writer.add_scalar('data/test_cider', test_cider, e)
-        writer.add_scalar('data/test_bleu1', scores['BLEU'][0], e)
-        writer.add_scalar('data/test_bleu4', scores['BLEU'][3], e)
-        writer.add_scalar('data/test_meteor', scores['METEOR'], e)
-        writer.add_scalar('data/test_rouge', scores['ROUGE'], e)
+            # Prepare for next epoch
+            best = False
+            if test_cider >= best_cider:
+                best_cider = test_cider
+                patience = 0
+                best = True
+            else:
+                patience += 1
 
-        # Prepare for next epoch
-        best = False
-        if test_cider >= best_cider:
-            best_cider = test_cider
-            patience = 0
-            best = True
-        else:
-            patience += 1
+            exit_train = False
+            if patience == args.patience:
+                print('patience reached.')
+                exit_train = True
 
-        exit_train = False
-        if patience == args.patience:
-            print('patience reached.')
-            exit_train = True
+            if not os.path.isdir(args.model_path):
+                os.makedirs(args.model_path)
 
-        if not os.path.isdir(args.model_path):
-            os.makedirs(args.model_path)
+            torch.save({
+                'torch_rng_state': torch.get_rng_state(),
+                'cuda_rng_state': torch.cuda.get_rng_state(),
+                'numpy_rng_state': np.random.get_state(),
+                'random_rng_state': random.getstate(),
+                'epoch': e,
+                'val_loss': val_loss,
+                'val_cider': val_cider,
+                'state_dict': model.state_dict(),
+                'optimizer': optim.state_dict(),
+                'scheduler': scheduler.state_dict(),
+                'patience': patience,
+                'best_cider': best_cider,
+            }, os.path.join(args.model_path, '%s_last.pth' % args.exp_mode))
 
-        torch.save({
-            'torch_rng_state': torch.get_rng_state(),
-            'cuda_rng_state': torch.cuda.get_rng_state(),
-            'numpy_rng_state': np.random.get_state(),
-            'random_rng_state': random.getstate(),
-            'epoch': e,
-            'val_loss': val_loss,
-            'val_cider': val_cider,
-            'state_dict': model.state_dict(),
-            'optimizer': optim.state_dict(),
-            'scheduler': scheduler.state_dict(),
-            'patience': patience,
-            'best_cider': best_cider,
-        }, os.path.join(args.model_path, '%s_last.pth' % args.exp_mode))
-
-        if best:
-            copyfile(os.path.join(args.model_path, '%s_last.pth' % args.exp_mode), os.path.join(args.model_path, '%s_best.pth' % args.exp_mode))
-        if exit_train:
-            writer.close()
-            break
-        
+            if best:
+                copyfile(os.path.join(args.model_path, '%s_last.pth' % args.exp_mode), os.path.join(args.model_path, '%s_best.pth' % args.exp_mode))
+            if exit_train:
+                writer.close()
+                break
+        dist.barrier()
         scheduler.step()

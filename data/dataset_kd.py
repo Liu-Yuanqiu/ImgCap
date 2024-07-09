@@ -260,7 +260,7 @@ def build_coco_dataloaders(use_cache, data_path, batch_size, num_workers, flag='
         'val_test': PairedDataset(coco.val_test_samples, transform['valid'], use_cache, len(text_field.vocab), stop_words),
         'test_test': PairedDataset(coco.test_test_samples, transform['valid'], use_cache, len(text_field.vocab), stop_words),
     }
-    del coco
+    # del coco
     # label = datasets['train'].__getitem__(120)[6]
     # for i in range(label.shape[0]):
     #     l = label[i]

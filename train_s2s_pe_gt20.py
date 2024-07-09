@@ -42,7 +42,7 @@ def evaluate_loss(model, dataloader):
                 samples['mask'] = samples['mask'].to(device)
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
-                losses = model(samples, labels, tokens_kd)
+                losses = model.forward_gt(samples, labels, tokens_kd)
 
                 loss = 0
                 for v in losses.values():
@@ -74,7 +74,7 @@ def evaluate_metrics(model, dataloader, text_field):
             samples['mask'] = samples['mask'].to(device)
             labels = labels.to(device)
             with torch.no_grad():
-                logit = model.infer(samples)
+                logit = model.infer_gt(samples, labels)
             
             _, out = torch.max(logit, -1)
             caps_gen = text_field.decode(out, join_words=False, deduplication=True)
@@ -105,7 +105,7 @@ def train_xe(model, dataloader, optim, text_field):
             labels = labels.to(device)
             tokens_kd = tokens_kd.to(device)
             for i in range(loop):
-                losses = model(samples, labels, tokens_kd)
+                losses = model.forward_gt(samples, labels, tokens_kd)
                 # print(losses)
                 optim.zero_grad()
                 loss = 0

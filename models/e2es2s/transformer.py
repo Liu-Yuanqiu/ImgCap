@@ -22,7 +22,9 @@ class Transformer(nn.Module):
             nn.LayerNorm(d_model))
         self.img_emb = nn.Sequential(
             PatchEmbed(),
-            nn.Linear(768, feat_dim))
+            # nn.Linear(768, feat_dim)
+            )
+        # self.pca = PCA(n_component=feat_dim)
         self.encoder_i = nn.ModuleList([DiffusionDecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_en)])
         self.encoder_w = nn.ModuleList([DiffusionDecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_wo)])    
         self.decoder = nn.ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_de)])
@@ -31,6 +33,7 @@ class Transformer(nn.Module):
         self.vocab_size = vocab_size
         self.topk = topk
         self.dim = d_model
+        self.feat_dim = feat_dim
         self.label_smoothing = 0.1
         self.confidence = 1.0 - self.label_smoothing
         self.bos_idx = 2
@@ -75,6 +78,46 @@ class Transformer(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
+    def PCA_svd(self, X, k, center=True):
+        n, device = X.size()[0], X.device
+        ones = torch.ones(n, device=device).view([n,1])
+        h = ((1/n) * torch.mm(ones, ones.t())) if center  else torch.zeros(n*n, device=device).view([n,n])
+        H = torch.eye(n, device=device) - h
+        # H = H.cuda()s
+        X_center =  torch.mm(H.double(), X.double())
+        u, s, v = torch.svd(X_center)
+        components  = v[:k].t()
+        #explained_variance = torch.mul(s[:k], s[:k])/(n-1)
+        return components
+
+    def pca(self, X):
+        # 计算均值向量并中心化
+        mean = torch.mean(X, dim=1, keepdim=True)
+        X_centered = X - mean
+        
+        # 计算协方差矩阵
+        cov = torch.matmul(X_centered.transpose(1, 2), X_centered) / (X_centered.size(1) - 1)
+        
+        # 计算协方差矩阵的特征值和特征向量
+        eigenvalues, eigenvectors = torch.symeig(cov, eigenvectors=True)
+        
+        # 对特征值和对应的特征向量按降序排列
+        # idx = eigenvalues.argsort(descending=True)
+        # eigenvalues = eigenvalues[idx]
+        # eigenvectors = eigenvectors[:, idx]
+        sorted_idx = torch.argsort(eigenvalues, dim=1, descending=True)
+        sorted_eigenvalues = torch.gather(eigenvalues, dim=1, index=sorted_idx)
+        expanded_sorted_idx = sorted_eigenvalues.unsqueeze(-1).expand_as(eigenvectors).long()
+        sorted_eigenvectors = torch.gather(eigenvectors, dim=1, index=expanded_sorted_idx)
+        
+        # 选择前n_components个特征向量
+        principal_components = sorted_eigenvectors[:, :, :self.dim]
+        
+        # 转换原始数据
+        transformed_data = torch.matmul(X_centered, principal_components)
+        
+        return transformed_data
+
     def predict_v(self, x_start, t, noise):
         return (
             extract(self.sqrt_alphas_cumprod, t, x_start.shape) * noise -
@@ -91,12 +134,14 @@ class Transformer(nn.Module):
         images, gri_feat, grid_mask = samples["image"], samples["grid"], samples["mask"]
         # gri_feat = self.fea_emb(gri_feat)
         images = self.img_emb(images)
+        images = self.pca(images)
+        gri_feat = self.pca(gri_feat)
         
         bs = gri_feat.shape[0]
         device = gri_feat.device
 
         losses = {}
-        ################# diffusion word ####################
+        ################# diffusion img ####################
         x_start = self.normalize(gri_feat)
         noise = torch.randn_like(x_start)
         batched_times = torch.randint(0, self.num_timesteps, (bs, ), device=device)
@@ -118,6 +163,9 @@ class Transformer(nn.Module):
         losses.update({"img": loss_i})
         outi = self.predict_start_from_v(noise, batched_times, outdi)
         outi = self.unnormalize(outi)
+
+        # outi = self.fea_emb(outi)
+
         ################# diffusion word ####################
         _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
         x_start = self.word_emb.id_embed(gt_topk)
@@ -142,45 +190,7 @@ class Transformer(nn.Module):
         losses.update({"word": loss_w})
         outw = self.predict_start_from_v(noise, batched_times, outwd)
         outw = self.normalize(outw)
-        # if t>0:
-        #     return losses
-        ##############################################
-        # x_start = None
-        # for tt in reversed(range(0, t[0])):
-        #     batched_times = torch.full((bs,), tt, device = device, dtype = torch.long)
-                
-        #     batched_times_emb = self.timestep_emb(batched_times)
-        #     model_out = x
-        #     for l in self.encoderw:
-        #         model_output = l(model_out, batched_times_emb, enc_img, gri_mask)
 
-        #     if self.objective == 'pred_noise':
-        #         pred_noise = model_output
-        #         x_start = self.predict_start_from_noise(x, batched_times, pred_noise)
-        #     elif self.objective == 'pred_x0':
-        #         x_start = model_output
-        #         pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
-        #     elif self.objective == 'pred_v':
-        #         v = model_output
-        #         x_start = self.predict_start_from_v(x, batched_times, v)
-        #         pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
-
-            # loss_w_t = F.mse_loss(model_output, target)
-            # loss_w.append(loss_w_t)
-
-            # x_start.clamp_(-1., 1.)
-            # model_mean = (
-            #     extract(self.posterior_mean_coef1, batched_times, x.shape) * x_start +
-            #     extract(self.posterior_mean_coef2, batched_times, x.shape) * x
-            # )
-            # posterior_variance = extract(self.posterior_variance, batched_times, x.shape)
-            # model_log_variance = extract(self.posterior_log_variance_clipped, batched_times, x.shape)
-            # noise = torch.randn_like(x) if tt > 0 else 0. # no noise if t == 0
-            # x = model_mean + (0.5 * model_log_variance).exp() * noise
-        # loss_w = torch.stack(loss_w)
-        # losses.update({"word": loss_w.mean()})
-
-        # outw = self.unnormalize(x)
         pos_indx = torch.arange(1, self.topk + 1, device=device).view(1, -1)
         if self.K_add_word:
             out = outw + self.pos_emb(pos_indx).repeat(bs, 1, 1)
@@ -223,6 +233,7 @@ class Transformer(nn.Module):
     def infer(self, samples):
         images = samples["image"]
         images = self.img_emb(images)
+        images = self.pca(images)
         bs, device = images.shape[0], images.device
 
         x = torch.randn((bs, 60, self.dim), device=device)
@@ -295,7 +306,7 @@ class Transformer(nn.Module):
                 noise = torch.randn_like(x) if t > 0 else 0. # no noise if t == 0
                 x = model_mean + (0.5 * model_log_variance).exp() * noise
         outi = self.unnormalize(x)
-
+        # outi = self.fea_emb(outi)
         
         x = torch.randn((bs, self.topk, self.dim), device=device)
         x_start = None
@@ -308,7 +319,7 @@ class Transformer(nn.Module):
                 batched_times_emb = self.timestep_emb(batched_times)
                 model_output = x
                 for l in self.encoder_w:
-                    model_output = l(model_output, batched_times_emb, images)
+                    model_output = l(model_output, batched_times_emb, outi)
                 if self.objective == 'pred_noise':
                     pred_noise = model_output
                     x_start = self.predict_start_from_noise(x, batched_times, pred_noise)
@@ -343,7 +354,7 @@ class Transformer(nn.Module):
                 batched_times_emb = self.timestep_emb(batched_times)
                 model_output = x
                 for l in self.encoder_w:
-                    model_output = l(model_output, batched_times_emb, images)
+                    model_output = l(model_output, batched_times_emb, outi)
 
                 if self.objective == 'pred_noise':
                     pred_noise = model_output
@@ -593,7 +604,75 @@ class TimestepEmbedder(nn.Module):
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
         t_emb = self.mlp(t_freq)
         return t_emb
+
+import torch
+from torch.linalg import eig
+
+
+class PCA():
+    def __init__(self, n_component: int = 1024) -> None:
+        """主成分分析
+
+        Args:
+            n_component (int): 保留的主成分数
+        """
+        super().__init__()
+        self.n_component = n_component
+
+    def CHECK_SHAPE(self, shape: torch.Size) -> None:
+        assert len(shape) >= 2, 'Shape of input is expected bigger than 2!!!'
+        limit = 1
+        for i in range(1, len(shape)):
+            limit *= shape[i]
+        assert limit >= self.n_component, f'n_component = {self.n_component}, expected <= {limit}'
+
+    @torch.no_grad()
+    def fit(self, X: torch.Tensor) -> None:
+        """提取主成分
+
+        Args:
+            X (torch.Tensor): 待进行主成分分析的输入张量，形状应当为 (batch_size, ...)
+        """
+        self.CHECK_SHAPE(X.shape)
+        Y = X.reshape(X.shape[0], -1).to(X.device)
+        self.mean = Y.mean(0)
+        Z = Y - self.mean
+        
+        covariance = Z.T @ Z
+        _, eig_vec = eig(covariance)
+
+        self.components = eig_vec[:, :self.n_component]
+
+    @torch.no_grad()
+    def transform(self, X: torch.Tensor) -> torch.Tensor:
+        """数据降维
+
+        Args:
+            X (torch.Tensor): 待降维数据，形状应当为 (batch_size, ...)
+
+        Returns:
+            torch.Tensor: 降维后数据
+        """
+        self.CHECK_SHAPE(X.shape)
+        Z = X.reshape(X.shape[0], -1).to(X.device)
+
+        return (Z - self.mean) @ self.components.real
     
+    @torch.no_grad()
+    def reconstruct(self, X: torch.Tensor) -> torch.Tensor:
+        """高维数据重建
+
+        Args:
+            X (torch.Tensor): 待重建数据，形状应当为 (batch_size, ...)
+
+        Returns:
+            torch.Tensor: 重建后数据
+        """
+        assert len(X.shape) == 2, 'Shape of input is expected to equal to 2!!!'
+
+        return (X @ self.components.real.T) + self.mean
+
+
 class EncoderLayer(nn.Module):
     def __init__(self, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, identity_map_reordering=False):
         super(EncoderLayer, self).__init__()

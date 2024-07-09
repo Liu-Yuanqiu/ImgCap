@@ -22,8 +22,14 @@ class Transformer(nn.Module):
             nn.LayerNorm(d_model))
         self.encoder = nn.ModuleList([EncoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_en)])
         # self.img2word = nn.Linear(d_model, d_model)
-        self.encoderw = ModuleList([DiffusionDecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_wo)])    
-        self.decoder1 = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_de)])    
+        self.timestep_emb = nn.Sequential(
+            LearnedSinusoidalPosEmb(d_model//2),
+            nn.Linear(d_model//2+1, d_model),
+            nn.SiLU(),
+            nn.Linear(d_model, d_model)
+        )
+        self.encoderw = nn.ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_wo)])    
+        self.decoder1 = nn.ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_de)])    
         # self.decoder2 = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout)  for _ in range(N_de)])
         self.word_emb = WordEmbedding(vocab_size, d_model, padding_idx)
         self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
@@ -55,7 +61,7 @@ class Transformer(nn.Module):
         self.posterior_mean_coef2 = (1. - self.alphas_cumprod_prev) * torch.sqrt(self.alphas) / (1. - self.alphas_cumprod)
         posterior_variance = self.betas * (1. - self.alphas_cumprod_prev) / (1. - self.alphas_cumprod)
         self.posterior_log_variance_clipped = torch.log(posterior_variance.clamp(min =1e-20))
-        self.timestep_emb = TimestepEmbedder(d_model)
+        # self.timestep_emb = TimestepEmbedder(d_model)
         self.normalize = normalize_to_neg_one_to_one
         self.unnormalize = unnormalize_to_zero_to_one
         self.objective = "pred_v" # pred_noise pred_x0
@@ -186,6 +192,43 @@ class Transformer(nn.Module):
         losses.update({"seq": loss_s})
         return losses
     
+    def forward_encoderw(self, images, labels):
+        gri_feat, gri_mask = images['grid'], images['mask']
+        gri_feat = self.image_emb(gri_feat)
+
+        bs = gri_feat.shape[0]
+        device = gri_feat.device
+
+        enc_img = gri_feat
+        for l in self.encoder:
+            enc_img = l(enc_img, enc_img, enc_img, gri_mask)
+
+        losses = {}
+
+        ################# diffusion ####################
+        _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
+        x_start = self.word_emb.id_embed(gt_topk)
+        x_start = self.normalize(x_start)
+        noise = torch.randn_like(x_start)
+        batched_times = torch.randint(0, self.num_timesteps, (bs, ), device=device)
+        # batched_times = torch.full((bs,), t, device = device, dtype = torch.long)
+        x = self.q_sample(x_start=x_start, t=batched_times, noise=noise)
+        outwd = x.to(torch.float32)
+        outwd = outwd + self.timestep_emb(batched_times).unsqueeze(1)
+        for l in self.encoderw:
+            outwd = l(outwd, outwd, enc_img, gri_mask)
+
+        if self.objective == 'pred_noise':
+            target = noise
+        elif self.objective == 'pred_x0':
+            target = x_start
+        elif self.objective == 'pred_v':
+            v = self.predict_v(x_start, batched_times, noise)
+            target = v
+        loss_w = F.mse_loss(outwd, target)
+        losses.update({"word": loss_w})
+        return losses
+
     def predict_start_from_noise(self, x_t, t, noise):
         return (
             extract(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t -
@@ -220,9 +263,9 @@ class Transformer(nn.Module):
             for time, time_next in time_pairs:
                 batched_times = torch.full((bs,), time, device = device, dtype = torch.long)
                 batched_times_emb = self.timestep_emb(batched_times)
-                model_output = x
+                model_output = x + batched_times_emb.unsqueeze(1)
                 for l in self.encoderw:
-                    model_output = l(model_output, batched_times_emb, enc_img, gri_mask)
+                    model_output = l(model_output, model_output, enc_img, gri_mask)
                 if self.objective == 'pred_noise':
                     pred_noise = model_output
                     x_start = self.predict_start_from_noise(x, batched_times, pred_noise)
@@ -255,9 +298,9 @@ class Transformer(nn.Module):
                 batched_times = torch.full((bs,), t, device = device, dtype = torch.long)
                     
                 batched_times_emb = self.timestep_emb(batched_times)
-                model_output = x
+                model_output = x + batched_times_emb.unsqueeze(1)
                 for l in self.encoderw:
-                    model_output = l(model_output, batched_times_emb, enc_img, gri_mask)
+                    model_output = l(model_output, model_output, enc_img, gri_mask)
 
                 if self.objective == 'pred_noise':
                     pred_noise = model_output
@@ -461,7 +504,23 @@ class TimestepEmbedder(nn.Module):
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
         t_emb = self.mlp(t_freq)
         return t_emb
-    
+class LearnedSinusoidalPosEmb(nn.Module):
+    """ following @crowsonkb 's lead with learned sinusoidal pos emb """
+    """ https://github.com/crowsonkb/v-diffusion-jax/blob/master/diffusion/models/danbooru_128.py#L8 """
+
+    def __init__(self, dim):
+        super().__init__()
+        assert (dim % 2) == 0
+        half_dim = dim // 2
+        self.weights = nn.Parameter(torch.randn(half_dim))
+
+    def forward(self, x):
+        x = rearrange(x, 'b -> b 1')
+        freqs = x * rearrange(self.weights, 'd -> 1 d') * 2 * math.pi
+        fouriered = torch.cat((freqs.sin(), freqs.cos()), dim = -1)
+        fouriered = torch.cat((x, fouriered), dim = -1)
+        return fouriered
+        
 class EncoderLayer(nn.Module):
     def __init__(self, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, identity_map_reordering=False):
         super(EncoderLayer, self).__init__()
