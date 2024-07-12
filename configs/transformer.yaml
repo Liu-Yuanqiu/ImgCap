@@ -1,4 +1,4 @@
-exp_name: 'transformer'
+exp_name: 'up_down_36'
 exp_mode: 'transformer'
 resume_last: false
 resume_best: false

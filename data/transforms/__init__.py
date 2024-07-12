@@ -30,3 +30,11 @@ def get_transform(cfg):
             'train': Compose([resize, ToTensor(), normalize()]),
             'valid': Compose([resize, ToTensor(), normalize()]),
         }
+
+def get_transform_clip(model_path):
+    import clip
+    clip_model, feature_extractor = clip.load("ViT-B/32") #RN50x64
+    return {
+        'train': feature_extractor,
+        'valid': feature_extractor,
+    }

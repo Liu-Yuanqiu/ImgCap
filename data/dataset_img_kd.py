@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
 from PIL import Image
 from data.utils import load_txt, nested_tensor_from_tensor_list
-from data.transforms import get_transform
+from data.transforms import get_transform_clip
 from data.field import TextField
 from pycocotools.coco import COCO as pyCOCO
 
@@ -236,14 +236,20 @@ def get_stop_words(text_field, stop_word_path):
         stop_word_ids.append(text_field.vocab.stoi[w])
     return stop_word_ids
     
-def build_coco_dataloaders(use_cache, data_path, batch_size, num_workers, flag='kd', device='cpu'):
-    cfg_transform = {
-        # "size": [384, 640],
-        "size": [224, 224],
-        "resize_name": "normal", # normal, minmax, maxwh; maxwh is computationally friendly for training
-        "randaug": True
+def build_coco_dataloaders(use_cache, data_path, batch_size, num_workers, flag='kd', transform=None, device='cpu'):
+    if transform is None:
+        cfg_transform = {
+            # "size": [384, 640],
+            "size": [224, 224],
+            "resize_name": "normal", # normal, minmax, maxwh; maxwh is computationally friendly for training
+            "randaug": True
+            }
+        transform = get_transform(cfg_transform)
+    else:
+        transform = {
+            "train": transform,
+            "valid": transform
         }
-    transform = get_transform(cfg_transform)
     use_cache = use_cache
     text_field = TextField(vocab_path=os.path.join(data_path, "txt", "coco_vocabulary.txt"))
     stop_words = get_stop_words(text_field, os.path.join(data_path, "txt", "english"))

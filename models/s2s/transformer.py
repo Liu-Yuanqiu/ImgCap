@@ -1,6 +1,8 @@
 import math
 import torch
 import numpy as np
+from functools import partial
+from einops import rearrange, repeat
 from torch import nn
 from torch.nn import NLLLoss
 from torch.nn import functional as F
@@ -8,11 +10,11 @@ from torch.distributions import Categorical
 from einops import rearrange, reduce
 from models.containers import ModuleList
 from models.attention import MultiHeadAttention, PositionWiseFeedForward, sinusoid_encoding_table
-
+from .utils import *
 class Transformer(nn.Module):
     def __init__(self, feat_dim, vocab_size, padding_idx, topk, num_timesteps, sampling_timesteps=None, ddim_sampling_eta=0.,\
                 K_add_word=False, \
-                N_en=3, N_wo=3, N_de=3, \
+                N_en=3, N_wo=6, N_de=3, \
                 d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1):
         super(Transformer, self).__init__()
         self.image_emb = nn.Sequential( 
@@ -20,27 +22,22 @@ class Transformer(nn.Module):
             nn.ReLU(), 
             nn.Dropout(p=0.1), 
             nn.LayerNorm(d_model))
-        self.encoder = nn.ModuleList([EncoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_en)])
-        # self.img2word = nn.Linear(d_model, d_model)
-        self.timestep_emb = nn.Sequential(
-            LearnedSinusoidalPosEmb(d_model//2),
-            nn.Linear(d_model//2+1, d_model),
-            nn.SiLU(),
-            nn.Linear(d_model, d_model)
-        )
-        self.encoderw = nn.ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_wo)])    
-        self.decoder1 = nn.ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_de)])    
-        # self.decoder2 = ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout)  for _ in range(N_de)])
-        self.word_emb = WordEmbedding(vocab_size, d_model, padding_idx)
-        self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
-        # self.pos_emb_freeze = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=True)
+        self.ei = nn.ModuleList([EncoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_en)])
+        self.ew = nn.ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_wo)])
+        self.ew_bit_emb = BitEmbedding(vocab_size, d_model)
+        self.ew_fc = nn.Linear(d_model, vocab_size)
+        self.decoder_word_emb = nn.Embedding(vocab_size, d_model, padding_idx=padding_idx)
+        self.decoder = nn.ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_de)])
+        self.decoder_pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
+        self.decoder_fc = nn.Linear(d_model, vocab_size)
         self.vocab_size = vocab_size
         self.topk = topk
         self.dim = d_model
         self.label_smoothing = 0.1
         self.confidence = 1.0 - self.label_smoothing
         self.bos_idx = 2
-        
+        self.K_add_word = K_add_word
+
         self.ce_loss = nn.NLLLoss(ignore_index=padding_idx, reduction='none')
         self.kl_loss = nn.KLDivLoss(reduction="none")
         self.init_weights()
@@ -48,34 +45,35 @@ class Transformer(nn.Module):
         self.sampling_timesteps = num_timesteps if sampling_timesteps is None else sampling_timesteps
         self.is_ddim_sampling = self.sampling_timesteps < num_timesteps
         self.ddim_sampling_eta = ddim_sampling_eta
+        self.time_difference = 0.0
 
-        self.betas = sigmoid_beta_schedule(self.num_timesteps) # shape:[num_timesteps,]
-        self.alphas = 1. - self.betas
-        self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
-        self.alphas_cumprod_prev = F.pad(self.alphas_cumprod[:-1], (1, 0), value = 1.)
-        self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
-        self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1. - self.alphas_cumprod)
-        self.sqrt_recip_alphas_cumprod = torch.sqrt(1. / self.alphas_cumprod)
-        self.sqrt_recipm1_alphas_cumprod = torch.sqrt(1. / self.alphas_cumprod - 1)
-        self.posterior_mean_coef1 = self.betas * torch.sqrt(self.alphas_cumprod_prev) / (1. - self.alphas_cumprod)
-        self.posterior_mean_coef2 = (1. - self.alphas_cumprod_prev) * torch.sqrt(self.alphas) / (1. - self.alphas_cumprod)
-        posterior_variance = self.betas * (1. - self.alphas_cumprod_prev) / (1. - self.alphas_cumprod)
-        self.posterior_log_variance_clipped = torch.log(posterior_variance.clamp(min =1e-20))
+        # self.betas = sigmoid_beta_schedule(self.num_timesteps) # shape:[num_timesteps,]
+        # self.alphas = 1. - self.betas
+        # self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
+        # self.alphas_cumprod_prev = F.pad(self.alphas_cumprod[:-1], (1, 0), value = 1.)
+        # self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
+        # self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1. - self.alphas_cumprod)
+        # self.sqrt_recip_alphas_cumprod = torch.sqrt(1. / self.alphas_cumprod)
+        # self.sqrt_recipm1_alphas_cumprod = torch.sqrt(1. / self.alphas_cumprod - 1)
+        # self.posterior_mean_coef1 = self.betas * torch.sqrt(self.alphas_cumprod_prev) / (1. - self.alphas_cumprod)
+        # self.posterior_mean_coef2 = (1. - self.alphas_cumprod_prev) * torch.sqrt(self.alphas) / (1. - self.alphas_cumprod)
+        # posterior_variance = self.betas * (1. - self.alphas_cumprod_prev) / (1. - self.alphas_cumprod)
+        # self.posterior_log_variance_clipped = torch.log(posterior_variance.clamp(min =1e-20))
         # self.timestep_emb = TimestepEmbedder(d_model)
-        self.normalize = normalize_to_neg_one_to_one
-        self.unnormalize = unnormalize_to_zero_to_one
-        self.objective = "pred_v" # pred_noise pred_x0
-        self.K_add_word = K_add_word
+        # self.normalize = normalize_to_neg_one_to_one
+        # self.unnormalize = unnormalize_to_zero_to_one
+        # self.objective = "pred_v" # pred_noise pred_x0
+        
     
     def tensor_to(self, device):
-        self.sqrt_alphas_cumprod = self.sqrt_alphas_cumprod.to(device)
-        self.sqrt_one_minus_alphas_cumprod = self.sqrt_one_minus_alphas_cumprod.to(device)
-        self.sqrt_recip_alphas_cumprod = self.sqrt_recip_alphas_cumprod.to(device)
-        self.sqrt_recipm1_alphas_cumprod = self.sqrt_recipm1_alphas_cumprod.to(device)
-        self.posterior_mean_coef1 = self.posterior_mean_coef1.to(device)
-        self.posterior_mean_coef2 = self.posterior_mean_coef2.to(device)
-        self.posterior_log_variance_clipped = self.posterior_log_variance_clipped.to(device)
-
+        # self.sqrt_alphas_cumprod = self.sqrt_alphas_cumprod.to(device)
+        # self.sqrt_one_minus_alphas_cumprod = self.sqrt_one_minus_alphas_cumprod.to(device)
+        # self.sqrt_recip_alphas_cumprod = self.sqrt_recip_alphas_cumprod.to(device)
+        # self.sqrt_recipm1_alphas_cumprod = self.sqrt_recipm1_alphas_cumprod.to(device)
+        # self.posterior_mean_coef1 = self.posterior_mean_coef1.to(device)
+        # self.posterior_mean_coef2 = self.posterior_mean_coef2.to(device)
+        # self.posterior_log_variance_clipped = self.posterior_log_variance_clipped.to(device)
+        self.ew_bit_emb.vocab_bit_buffer.to(device)
     def init_weights(self):
         for p in self.parameters():
             if p.dim() > 1:
@@ -192,7 +190,7 @@ class Transformer(nn.Module):
         losses.update({"seq": loss_s})
         return losses
     
-    def forward_encoderw(self, images, labels):
+    def forward_ew(self, images, labels):
         gri_feat, gri_mask = images['grid'], images['mask']
         gri_feat = self.image_emb(gri_feat)
 
@@ -200,35 +198,49 @@ class Transformer(nn.Module):
         device = gri_feat.device
 
         enc_img = gri_feat
-        for l in self.encoder:
+        for l in self.ei:
             enc_img = l(enc_img, enc_img, enc_img, gri_mask)
 
         losses = {}
 
         ################# diffusion ####################
         _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
-        x_start = self.word_emb.id_embed(gt_topk)
-        x_start = self.normalize(x_start)
-        noise = torch.randn_like(x_start)
-        batched_times = torch.randint(0, self.num_timesteps, (bs, ), device=device)
-        # batched_times = torch.full((bs,), t, device = device, dtype = torch.long)
-        x = self.q_sample(x_start=x_start, t=batched_times, noise=noise)
-        outwd = x.to(torch.float32)
-        outwd = outwd + self.timestep_emb(batched_times).unsqueeze(1)
-        for l in self.encoderw:
+        gt_topk_bit = self.ew_bit_emb.get_bit_repr(gt_topk)
+        noise = torch.randn_like(gt_topk_bit)
+        times = torch.zeros((bs,), device = device).float().uniform_(0, 0.999)
+        noise_level = beta_linear_log_snr(times)
+        padded_noise_level = right_pad_dims_to(gt_topk_bit, noise_level)
+        alpha, sigma = log_snr_to_alpha_sigma(padded_noise_level)
+        x_start = alpha * gt_topk_bit + sigma * noise
+
+        self_conf = None
+        if torch.rand(1).item() < 0.5:
+            with torch.no_grad():
+                outwd = self.ew_bit_emb(x_start, times=times)
+                for l in self.ew:
+                    outwd = l(outwd, outwd, enc_img, gri_mask)
+                logit = self.ew_fc(outwd)
+                logit_w = self.ew_bit_emb.fc(logit)
+                self_conf = logit_w.detach_()
+
+        outwd = self.ew_bit_emb(x_start, times=times, self_conf=self_conf)
+        for l in self.ew:
             outwd = l(outwd, outwd, enc_img, gri_mask)
-
-        if self.objective == 'pred_noise':
-            target = noise
-        elif self.objective == 'pred_x0':
-            target = x_start
-        elif self.objective == 'pred_v':
-            v = self.predict_v(x_start, batched_times, noise)
-            target = v
-        loss_w = F.mse_loss(outwd, target)
-        losses.update({"word": loss_w})
+        logit = self.ew_fc(outwd)
+        logit_w = self.ew_bit_emb.fc(logit)
+        loss_w = F.mse_loss(logit_w, gt_topk_bit)
+        losses.update({"mse": loss_w})
+        logP = F.log_softmax(logit.view(-1, logit.shape[-1]), dim=-1) 
+        assign_seq = gt_topk.view(-1)
+        assign_seq[assign_seq < 3] = 0
+        size = logP.size(1)
+        true_dist = logP.clone()
+        true_dist.fill_(self.label_smoothing / (size - 1))
+        true_dist.scatter_(1, assign_seq.data.unsqueeze(1), self.confidence)
+        loss_s = self.kl_loss(logP, true_dist).sum(1).mean()
+        losses.update({"ce": loss_s})
         return losses
-
+    
     def predict_start_from_noise(self, x_t, t, noise):
         return (
             extract(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t -
@@ -245,124 +257,85 @@ class Transformer(nn.Module):
             extract(self.sqrt_one_minus_alphas_cumprod, t, x_t.shape) * v
         )
     
+    def get_sampling_timesteps(self, batch, device):
+        times = torch.linspace(1., 0., self.sampling_timesteps + 1, device = device)
+        times = repeat(times, 't -> b t', b = batch)
+        times = torch.stack((times[:, :-1], times[:, 1:]), dim = 0)
+        times = times.unbind(dim = -1)
+        return times
+    
     def infer(self, images):
         gri_feat, gri_mask = images['grid'], images['mask']
         gri_feat = self.image_emb(gri_feat)
 
         enc_img = gri_feat
-        for l in self.encoder:
+        for l in self.ei:
             enc_img = l(enc_img, enc_img, enc_img, gri_mask)
 
-        bs, device = enc_img.shape[0], enc_img.device
-        x = torch.randn((bs, self.topk, self.dim), device=device)
+        bs = enc_img.shape[0]
+        device = enc_img.device
+        time_pairs = self.get_sampling_timesteps(bs, device)
+        x = torch.randn((bs, self.topk, self.ew_bit_emb.bit_dim), device=device)
         x_start = None
-        if self.is_ddim_sampling:
-            times = torch.linspace(-1, self.num_timesteps - 1, steps = self.sampling_timesteps + 1)   # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps
-            times = list(reversed(times.int().tolist()))
-            time_pairs = list(zip(times[:-1], times[1:]))
-            for time, time_next in time_pairs:
-                batched_times = torch.full((bs,), time, device = device, dtype = torch.long)
-                batched_times_emb = self.timestep_emb(batched_times)
-                model_output = x + batched_times_emb.unsqueeze(1)
-                for l in self.encoderw:
-                    model_output = l(model_output, model_output, enc_img, gri_mask)
-                if self.objective == 'pred_noise':
-                    pred_noise = model_output
-                    x_start = self.predict_start_from_noise(x, batched_times, pred_noise)
-                elif self.objective == 'pred_x0':
-                    x_start = model_output
-                    pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
+        for time, time_next in time_pairs:
+            time_next = (time_next - self.time_difference).clamp(min=0.)
+            noise_cond = beta_linear_log_snr(time)
 
-                elif self.objective == 'pred_v':
-                    v = model_output
-                    x_start = self.predict_start_from_v(x, batched_times, v)
-                    pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
-                
-                if time_next < 0:
-                    x = x_start
-                    continue
+            outwd = self.ew_bit_emb(x, times=noise_cond, self_conf=x_start)
+            for l in self.ew:
+                outwd = l(outwd, outwd, enc_img, gri_mask)
+            logit = self.decoder_fc(outwd)
+            logit_w = self.ew_bit_emb.fc(logit)
+            x_start = logit_w
+            x_start.clamp_(-self.ew_bit_emb.bit_scale, self.ew_bit_emb.bit_scale)
 
-                alpha = self.alphas_cumprod[time]
-                alpha_next = self.alphas_cumprod[time_next]
+            log_snr = beta_linear_log_snr(time)
+            log_snr_next = beta_linear_log_snr(time_next)
+            log_snr, log_snr_next = map(partial(right_pad_dims_to, x), (log_snr, log_snr_next))
+            alpha, sigma = log_snr_to_alpha_sigma(log_snr)
+            alpha_next, sigma_next = log_snr_to_alpha_sigma(log_snr_next)
 
-                sigma = self.ddim_sampling_eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
-                c = (1 - alpha_next - sigma ** 2).sqrt()
-
-                noise = torch.randn_like(x)
-
-                x = x_start * alpha_next.sqrt() + \
-                    c * pred_noise + \
-                    sigma * noise
-        else:
-            for t in reversed(range(0, self.num_timesteps)):
-                batched_times = torch.full((bs,), t, device = device, dtype = torch.long)
-                    
-                batched_times_emb = self.timestep_emb(batched_times)
-                model_output = x + batched_times_emb.unsqueeze(1)
-                for l in self.encoderw:
-                    model_output = l(model_output, model_output, enc_img, gri_mask)
-
-                if self.objective == 'pred_noise':
-                    pred_noise = model_output
-                    x_start = self.predict_start_from_noise(x, batched_times, pred_noise)
-                elif self.objective == 'pred_x0':
-                    x_start = model_output
-                    pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
-
-                elif self.objective == 'pred_v':
-                    v = model_output
-                    x_start = self.predict_start_from_v(x, batched_times, v)
-                    pred_noise = self.predict_noise_from_start(x, batched_times, x_start)
-                
-                x_start.clamp_(-1., 1.)
-                
-                model_mean = (
-                    extract(self.posterior_mean_coef1, batched_times, x.shape) * x_start +
-                    extract(self.posterior_mean_coef2, batched_times, x.shape) * x
-                )
-                # posterior_variance = extract(self.posterior_variance, batched_times, x.shape)
-                model_log_variance = extract(self.posterior_log_variance_clipped, batched_times, x.shape)
-                noise = torch.randn_like(x) if t > 0 else 0. # no noise if t == 0
-                x = model_mean + (0.5 * model_log_variance).exp() * noise
-        outw = self.unnormalize(x)
-
+            c = -expm1(log_snr - log_snr_next)
+            mean = alpha_next * (x * (1-c) / alpha + c * x_start)
+            x = mean
+        outw_ids = bits_to_decimal(x, self.vocab_size, self.ew_bit_emb.bit_dim)
+        outw_ids = outw_ids.clamp(0., 9489.).long()
+        outw = self.decoder_word_emb(outw_ids)
+        
         pos_indx = torch.arange(1, self.topk + 1, device=enc_img.device).view(1, -1)
         if self.K_add_word:
-            out = outw + self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
+            out = outw + self.decoder_pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
             outw = out
         else:
-            out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
-        for l in self.decoder1:
+            out = self.decoder_pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
+        for l in self.decoder:
             out = l(out, outw, enc_img, gri_mask)
         
-        out = self.word_emb.fc(out)
+        out = self.decoder_fc(out)
         return F.log_softmax(out, dim=-1)
     
     def forward_gt(self, images, labels, tokens_kd):
         gri_feat, gri_mask = images['grid'], images['mask']
         gri_feat = self.image_emb(gri_feat)
 
-        bs = gri_feat.shape[0]
-        device = gri_feat.device
-
         enc_img = gri_feat
-        for l in self.encoder:
+        for l in self.ei:
             enc_img = l(enc_img, enc_img, enc_img, gri_mask)
 
         losses = {}
         _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
-        outw = self.word_emb.id_embed(gt_topk)
+        outw = self.decoder_word_emb(gt_topk)
 
         pos_indx = torch.arange(1, self.topk + 1, device='cuda').view(1, -1)
-        out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
-        for l in self.decoder1:
+        out = self.decoder_pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
+        for l in self.decoder:
             out = l(out, outw, enc_img, gri_mask)
         
         # ce
-        logit_d1 = self.word_emb.fc(out)
+        logit_d1 = self.decoder_fc(out)
         logP = F.log_softmax(logit_d1.view(-1, logit_d1.shape[-1]), dim=-1) 
         assign_seq = tokens_kd.view(-1)
-        assign_seq[assign_seq < 0] = 0
+        assign_seq[assign_seq < 3] = 0
 
         size = logP.size(1)
         true_dist = logP.clone()
@@ -377,18 +350,18 @@ class Transformer(nn.Module):
         gri_feat = self.image_emb(gri_feat)
 
         enc_img = gri_feat
-        for l in self.encoder:
+        for l in self.ei:
             enc_img = l(enc_img, enc_img, enc_img, gri_mask)
 
         _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
-        outw = self.word_emb.id_embed(gt_topk)
+        outw = self.decoder_word_emb(gt_topk)
         
         pos_indx = torch.arange(1, self.topk + 1, device='cuda').view(1, -1)
-        out = self.pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
-        for l in self.decoder1:
+        out = self.decoder_pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
+        for l in self.decoder:
             out = l(out, outw, enc_img, gri_mask)
         
-        out = self.word_emb.fc(out)
+        out = self.decoder_fc(out)
         return F.log_softmax(out, dim=-1)
     
     def entropy(self, out):
@@ -407,6 +380,45 @@ class Transformer(nn.Module):
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
+    
+class BitEmbedding(nn.Module):
+    def __init__(self, vocab_size, dim):
+        super(BitEmbedding, self).__init__()
+        self.vocab_size = vocab_size
+        self.bit_dim = int(np.ceil(np.log2(vocab_size)))
+        self.dim = dim
+        self.bit_emb = nn.Linear(self.bit_dim*2, self.dim, bias=False)
+        self.bit_scale = 1.
+        self.time_emb = nn.Sequential(
+            LearnedSinusoidalPosEmb(dim//2),
+            nn.Linear(dim//2 + 1, dim),
+            nn.SiLU(),
+            nn.Linear(dim, dim)
+        )
+        vocab_inds = torch.arange(0, vocab_size).long().view(1, vocab_size, 1, 1)
+        self.vocab_bit_buffer = decimal_to_bits(vocab_inds, vocab_size=vocab_size, bits=self.bit_dim) * self.bit_scale
+    def get_bit_repr(self, input_ids):
+        batch_size, seq_length = input_ids.shape
+        input_ids = input_ids.view(batch_size, seq_length, 1, 1) # the same as img: batch_size x channel x height x weight
+        input_ids_bit = decimal_to_bits(input_ids, vocab_size=self.vocab_size, bits=self.bit_dim) * self.bit_scale
+        return input_ids_bit
+    
+    def fc(self, logit):
+        bs = logit.shape[0]
+        buffer_probs = nn.Softmax(-1)(logit)
+        self.vocab_bit_buffer = self.vocab_bit_buffer.to(logit.device)
+        logit_w = torch.matmul(buffer_probs, self.vocab_bit_buffer.expand(bs, -1, -1))
+        return logit_w
+    def forward(self, input_ids_bit, self_conf=None, times=None):
+        if len(input_ids_bit.shape) == 2:
+            input_ids_bit = self.get_bit_repr(input_ids_bit)
+        if self_conf is None:
+            self_conf = torch.zeros_like(input_ids_bit)
+        input_ids_bit = torch.cat([self_conf, input_ids_bit], dim=-1)
+        input_ids_bit_emb = self.bit_emb(input_ids_bit)
+        if times is not None:
+            input_ids_bit_emb = input_ids_bit_emb + self.time_emb(times).unsqueeze(1)
+        return input_ids_bit_emb
 
 class WordEmbedding(nn.Module):
     def __init__(self, vocab_size, dim, padding_idx):

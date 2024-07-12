@@ -5,13 +5,10 @@ from models.attention import MultiHeadAttention, PositionWiseFeedForward
 
 
 class EncoderLayer(nn.Module):
-    def __init__(self, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, identity_map_reordering=False,
-                 attention_module=None, attention_module_kwargs=None):
+    def __init__(self, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, identity_map_reordering=False):
         super(EncoderLayer, self).__init__()
         self.identity_map_reordering = identity_map_reordering
-        self.mhatt = MultiHeadAttention(d_model, d_k, d_v, h, dropout, identity_map_reordering=identity_map_reordering,
-                                        attention_module=attention_module,
-                                        attention_module_kwargs=attention_module_kwargs)
+        self.mhatt = MultiHeadAttention(d_model, d_k, d_v, h, dropout, identity_map_reordering=identity_map_reordering)
         self.dropout = nn.Dropout(dropout)
         self.lnorm = nn.LayerNorm(d_model)
         self.pwff = PositionWiseFeedForward(d_model, d_ff, dropout, identity_map_reordering=identity_map_reordering)
@@ -26,14 +23,12 @@ class EncoderLayer(nn.Module):
 
 class TransformerEncoder(nn.Module):
     def __init__(self, N, padding_idx, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1,
-                 identity_map_reordering=False, attention_module=None, attention_module_kwargs=None):
+                 identity_map_reordering=False):
         super(TransformerEncoder, self).__init__()
         self.d_model = d_model
         self.dropout = dropout
         self.layers = nn.ModuleList([EncoderLayer(d_model, d_k, d_v, h, d_ff, dropout,
-                                                  identity_map_reordering=identity_map_reordering,
-                                                  attention_module=attention_module,
-                                                  attention_module_kwargs=attention_module_kwargs)
+                                                  identity_map_reordering=identity_map_reordering)
                                      for _ in range(N)])
         self.padding_idx = padding_idx
 

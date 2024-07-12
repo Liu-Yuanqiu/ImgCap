@@ -29,14 +29,19 @@ class DictionaryCollator:
 
         outputs = {}
         if self.use_cache:
+            # grid = [item[2] for item in batch]
+            # mask = [item[3] for item in batch]
+            # grid = torch.from_numpy(np.stack(grid, 0))
+            # mask = torch.from_numpy(np.stack(mask, 0))
+            # samples = {}
+            # samples['grid'] = grid
+            # samples['mask'] = mask
+            # outputs['samples'] = samples
             grid = [item[2] for item in batch]
-            mask = [item[3] for item in batch]
             grid = torch.from_numpy(np.stack(grid, 0))
-            mask = torch.from_numpy(np.stack(mask, 0))
-            
             samples = {}
             samples['grid'] = grid
-            samples['mask'] = mask
+            samples['mask'] = None
             outputs['samples'] = samples
         else:
             imgs = [item[2] for item in batch]
@@ -69,7 +74,7 @@ class PairedCollator(DictionaryCollator):
             padded.append(caption)
 
         padded = [torch.Tensor(caption).long() for caption in padded]
-        padded = pad_sequence(padded, batch_first=True)
+        padded = pad_sequence(padded, batch_first=True, padding_value=self.pad_idx)
 
         b['captions'] = padded
         return b
@@ -88,12 +93,16 @@ class DictionaryDataset:
 
         if self.use_cache:
             img = {}
-            with np.load(filepath, allow_pickle=True) as data_grid:
-                grid = data_grid['grid']
-                grid = np.array(grid).astype('float32')
-                mask = data_grid['mask']
-                mask = np.array(mask).astype('bool')
-            return caption, id, grid, mask
+            # with np.load(filepath, allow_pickle=True) as data_grid:
+            #     grid = data_grid['grid']
+            #     grid = np.array(grid).astype('float32')
+            #     mask = data_grid['mask']
+            #     mask = np.array(mask).astype('bool')
+            # return caption, id, grid, mask
+            with np.load(filepath, allow_pickle=True) as data:
+                region_ud = data['feat']
+                region_ud = np.array(region_ud).astype('float32')
+            return caption, id, region_ud
         else:
             img = Image.open(filepath).convert('RGB')
             if self.transform is not None:
@@ -118,12 +127,16 @@ class PairedDataset:
 
         if self.use_cache:
             img = {}
-            with np.load(filepath, allow_pickle=True) as data_grid:
-                grid = data_grid['grid']
-                grid = np.array(grid).astype('float32')
-                mask = data_grid['mask']
-                mask = np.array(mask).astype('bool')
-            return caption, id, grid, mask
+            # with np.load(filepath, allow_pickle=True) as data_grid:
+            #     grid = data_grid['grid']
+            #     grid = np.array(grid).astype('float32')
+            #     mask = data_grid['mask']
+            #     mask = np.array(mask).astype('bool')
+            # return caption, id, grid, mask
+            with np.load(filepath, allow_pickle=True) as data:
+                region_ud = data['feat']
+                region_ud = np.array(region_ud).astype('float32')
+            return caption, id, region_ud
         else:
             img = Image.open(filepath).convert('RGB')
             if self.transform is not None:
@@ -152,7 +165,8 @@ class COCO:
                 anns = dataset_train2014.imgToAnns[id_train]
                 anns = [an["caption"] for an in anns]
                 if use_cache:
-                    filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id_train)+".npz")
+                    # filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id_train)+".npz")
+                    filepath = os.path.join(root_path, "feature", "up_down_36", str(id_train)+".npz")
                 else:
                     filename = "COCO_train2014_"+"0"*(12-len(str(id_train)))+str(id_train)+".jpg"
                     filepath = os.path.join(root_path, "feature", "coco2014", "train2014", filename)
@@ -164,7 +178,8 @@ class COCO:
                 anns = dataset_val2014.imgToAnns[id_train]
                 anns = [an["caption"] for an in anns]
                 if use_cache:
-                    filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id_train)+".npz")
+                    # filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id_train)+".npz")
+                    filepath = os.path.join(root_path, "feature", "up_down_36", str(id_train)+".npz")
                 else:
                     filename = "COCO_val2014_"+"0"*(12-len(str(id_train)))+str(id_train)+".jpg"
                     filepath = os.path.join(root_path, "feature", "coco2014", "val2014", filename)
@@ -177,7 +192,8 @@ class COCO:
             anns = dataset_val2014.imgToAnns[id_val]
             anns = [an["caption"] for an in anns]
             if use_cache:
-                filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id_val)+".npz")
+                # filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id_val)+".npz")
+                filepath = os.path.join(root_path, "feature", "up_down_36", str(id_train)+".npz")
             else:
                 filename = "COCO_val2014_"+"0"*(12-len(str(id_val)))+str(id_val)+".jpg"
                 filepath = os.path.join(root_path, "feature", "coco2014", "val2014", filename)
@@ -190,7 +206,8 @@ class COCO:
             anns = dataset_val2014.imgToAnns[id_test]
             anns = [an["caption"] for an in anns]
             if use_cache:
-                filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id_test)+".npz")
+                # filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id_test)+".npz")
+                filepath = os.path.join(root_path, "feature", "up_down_36", str(id_train)+".npz")
             else:
                 filename = "COCO_val2014_"+"0"*(12-len(str(id_test)))+str(id_test)+".jpg"
                 filepath = os.path.join(root_path, "feature", "coco2014", "val2014", filename)

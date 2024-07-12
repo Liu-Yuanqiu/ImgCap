@@ -36,7 +36,8 @@ def evaluate_loss(model, dataloader, loss_fn, text_field):
             for it, batch in enumerate(dataloader):
                 image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
                 samples['grid'] = samples['grid'].to(device)
-                samples['mask'] = samples['mask'].to(device)
+                if samples['mask'] is not None:
+                    samples['mask'] = samples['mask'].to(device)
                 captions = captions.to(device)
                 out = model(samples, captions)
                 captions = captions[:, 1:].contiguous()
@@ -64,7 +65,8 @@ def evaluate_metrics(model, dataloader, text_field):
         for it, batch in enumerate(dataloader):
             image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
             samples['grid'] = samples['grid'].to(device)
-            samples['mask'] = samples['mask'].to(device)
+            if samples['mask'] is not None:
+                samples['mask'] = samples['mask'].to(device)
             # captions = captions.to(device)
             with torch.no_grad():
                 out, _ = model.beam_search(samples, 20, text_field.vocab.stoi['<eos>'], 5, out_size=1)
@@ -90,7 +92,8 @@ def train_xe(model, dataloader, optim, text_field):
         for it, batch in enumerate(dataloader):
             image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
             samples['grid'] = samples['grid'].to(device)
-            samples['mask'] = samples['mask'].to(device)
+            if samples['mask'] is not None:
+                samples['mask'] = samples['mask'].to(device)
             captions = captions.to(device)
             out = model(samples, captions)
             optim.zero_grad()
@@ -166,7 +169,7 @@ def train_scst(model, dataloader, optim, cider, text_field):
 if __name__ == '__main__':
     args = OmegaConf.load('configs/transformer.yaml')
     print(args)
-    os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
     device = torch.device('cuda')
     multiprocessing.set_start_method('spawn')
     

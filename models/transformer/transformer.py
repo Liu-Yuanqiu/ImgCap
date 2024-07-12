@@ -14,7 +14,7 @@ class Transformer(CaptioningModel):
         self.decoder = decoder
         # image embed
         self.embed_image = nn.Sequential(
-                nn.Linear(1024, 512),
+                nn.Linear(2048, 512),
                 nn.ReLU(),
                 nn.Dropout(p=0.1),
                 nn.LayerNorm(512))

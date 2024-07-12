@@ -13,34 +13,40 @@ from data.field import TextField
 from pycocotools.coco import COCO as pyCOCO
 
 class DictionaryCollator:
-    def __init__(self, use_cache, device='cpu'):
+    def __init__(self, device='cpu'):
         self.device = device
-        self.use_cache = use_cache
 
     def __call__(self, batch):
-        labels = [item[0] for item in batch]
-        labels_out = [item[1] for item in batch]
-        caps_kd = [item[2] for item in batch]
-        tokens_kd = [item[3] for item in batch]
-        caps_gt = [item[4] for item in batch]
-        tokens_gt = [item[5] for item in batch]
-        image_ids = [item[6] for item in batch]
-
-
+        # grid_sd, grid_sd_mask, region_sd, region_sd_mask, region_ud, img, label, label_out, cap_kd, token_kd, cap_gt, token_gt, id
         outputs = {}
-        if self.use_cache:
-            grid = [item[7] for item in batch]
-            mask = [item[8] for item in batch]
-            grid = torch.from_numpy(np.stack(grid, 0)) #.to(self.device)
-            mask = torch.from_numpy(np.stack(mask, 0)) #.to(self.device)
+        grid_sd = [item[0] for item in batch]
+        grid_sd = torch.from_numpy(np.stack(grid_sd, 0))
+        grid_sd_mask = [item[1] for item in batch]
+        grid_sd_mask = torch.from_numpy(np.stack(grid_sd_mask, 0))
+        region_sd = [item[2] for item in batch]
+        region_sd = torch.from_numpy(np.stack(region_sd, 0))
+        region_sd_mask = [item[3] for item in batch]
+        region_sd_mask = torch.from_numpy(np.stack(region_sd_mask, 0))
+        region_ud = [item[4] for item in batch]
+        region_ud = torch.from_numpy(np.stack(region_ud, 0))
+        img = [item[5] for item in batch]
+        img = torch.from_numpy(np.stack(img, 0))
+        samples = {}
+        samples['grid_sd'] = grid_sd
+        samples['grid_sd_mask'] = grid_sd_mask
+        samples['region_sd'] = region_sd
+        samples['region_sd_mask'] = region_sd_mask
+        samples['region_ud'] = region_ud
+        samples['img'] = img
+        outputs['samples'] =samples
 
-            samples = {}
-            samples['grid'] = grid
-            samples['mask'] = mask
-            outputs['samples'] = samples
-        else:
-            imgs = [item[7] for item in batch]
-            outputs['samples'] = nested_tensor_from_tensor_list(imgs) #.to(self.device)
+        labels = [item[6] for item in batch]
+        labels_out = [item[7] for item in batch]
+        caps_kd = [item[8] for item in batch]
+        tokens_kd = [item[9] for item in batch]
+        caps_gt = [item[10] for item in batch]
+        tokens_gt = [item[11] for item in batch]
+        image_ids = [item[12] for item in batch]
 
         outputs['labels'] = labels
         outputs['labels_out'] = labels_out
@@ -53,13 +59,12 @@ class DictionaryCollator:
 
 class PairedCollator(DictionaryCollator):
 
-    def __init__(self, use_cache, device='cpu', max_len=54, pad_idx=1, bos_idx=2, eos_idx=3):
-        super().__init__(use_cache, device)
+    def __init__(self, device='cpu', max_len=54, pad_idx=1, bos_idx=2, eos_idx=3):
+        super().__init__(device)
         self.max_len = max_len
         self.pad_idx = pad_idx
         self.bos_idx = bos_idx
         self.eos_idx = eos_idx
-        self.use_cache = use_cache
     # label, cap_kd, token_kd, cap_gt, token_gt, id, grid, mask
     def __call__(self, batch):
         b = super().__call__(batch)
@@ -83,15 +88,14 @@ class PairedCollator(DictionaryCollator):
             padded.append(caption)
 
         padded = [torch.Tensor(caption).long() for caption in padded]
-        padded = pad_sequence(padded, batch_first=True) #.to(self.device)
+        padded = pad_sequence(padded, batch_first=True, padding_value=self.pad_idx) #.to(self.device)
         b['tokens_kd'] = padded
         return b
        
 class PairedDataset:
-    def __init__(self, examples, transform, use_cache, vocab_size, stop_words):
+    def __init__(self, examples, transform, vocab_size, stop_words):
         self.examples = examples
-        self.transform = transform
-        self.use_cache = use_cache
+        self.transform = transform        
         self.onehot = np.identity(vocab_size, dtype=np.int32)
         self.vocab_size = vocab_size
         self.kd_score = 1
@@ -101,7 +105,10 @@ class PairedDataset:
 
     def __getitem__(self, index):
         id = self.examples[index]['id']
-        filepath = self.examples[index]['image']
+        swin_dert_grid_path = self.examples[index]['swin_dert_grid_path']
+        swin_dert_region_path = self.examples[index]['swin_dert_region_path']
+        image_path = self.examples[index]['image_path']
+        up_down_36_path = self.examples[index]['up_down_36_path']
         cap_kd = self.examples[index]['cap_kd']
         token_kd = self.examples[index]['token_kd']
         cap_gt = self.examples[index]['cap_gt']
@@ -139,18 +146,23 @@ class PairedDataset:
                 if wid not in [0, 1, 2]:
                     label_out[i][wid] = self.kd_score
 
-        if self.use_cache:
-            with np.load(filepath, allow_pickle=True) as data_grid:
-                grid = data_grid['grid']
-                grid = np.array(grid).astype('float32')
-                mask = data_grid['mask']
-                mask = np.array(mask).astype('bool')
-            return label, label_out, cap_kd, token_kd, cap_gt, token_gt, id, grid, mask
-        else:
-            img = Image.open(filepath).convert('RGB')
-            if self.transform is not None:
-                img = self.transform(img)
-            return label, label_out, cap_kd, token_kd, cap_gt, token_gt, id, img
+        with np.load(swin_dert_grid_path, allow_pickle=True) as data:
+            grid_sd = data['grid']
+            grid_sd = np.array(grid_sd).astype('float32')
+            grid_sd_mask = data['mask']
+            grid_sd_mask = np.array(grid_sd_mask).astype('bool')
+        with np.load(swin_dert_region_path, allow_pickle=True) as data:
+            region_sd = data['region']
+            region_sd = np.array(region_sd).astype('float32')
+            region_sd_mask = data['mask']
+            region_sd_mask = np.array(region_sd_mask).astype('bool')
+        with np.load(up_down_36_path, allow_pickle=True) as data:
+            region_ud = data['feat']
+            region_ud = np.array(region_ud).astype('float32')
+        img = Image.open(image_path).convert('RGB')
+        if self.transform is not None:
+            img = self.transform(img)
+        return grid_sd, grid_sd_mask, region_sd, region_sd_mask, region_ud, img, label, label_out, cap_kd, token_kd, cap_gt, token_gt, id
         
     def __len__(self):
         return len(self.examples)
@@ -159,18 +171,17 @@ def id_coco_imgpath(img_id, is_train=False):
     x = "0"*(12-len(str(img_id)))+str(img_id)+".jpg"
     return x
 
-def id_path(root_path, img_id, use_cache):
-    if use_cache:
-        return os.path.join(root_path, "feature", "swin_dert_grid", str(img_id)+".npz")
-    else:
-        train_path = os.path.join(root_path, "feature", "coco2014", "train2014", "COCO_train2014_"+id_coco_imgpath(img_id))
-        if os.path.exists(train_path):
-            return train_path
-        else:
-            return os.path.join(root_path, "feature", "coco2014", "val2014", "COCO_val2014_"+id_coco_imgpath(img_id))
+def id_path(root_path, img_id):
+    swin_dert_grid_path = os.path.join(root_path, "feature", "swin_dert_grid", str(img_id)+".npz")
+    swin_dert_region_path = os.path.join(root_path, "feature", "swin_dert_region", str(img_id)+".npz")
+    image_path = os.path.join(root_path, "feature", "coco2014", "train2014", "COCO_train2014_"+id_coco_imgpath(img_id))
+    if not os.path.exists(image_path):
+        image_path = os.path.join(root_path, "feature", "coco2014", "val2014", "COCO_val2014_"+id_coco_imgpath(img_id))
+    up_down_36_path = os.path.join(root_path, "feature", "up_down_36", str(img_id)+".npz")
+    return swin_dert_grid_path, swin_dert_region_path, image_path, up_down_36_path
 
 class COCO_KD:
-    def __init__(self, text_field, stop_words, root_path, use_cache, flag):
+    def __init__(self, text_field, stop_words, root_path, origin_cap):
         self.train_samples = []
         self.val_samples = []
         self.val_test_samples = []
@@ -178,18 +189,16 @@ class COCO_KD:
         self.stop_words = stop_words
         self.gt_score = 1
         self.kd_score = 1
-        if flag=="kd":
-            cached_train = "cached_coco_train.json"
-            cached_val = "cached_coco_val.json"
-            cached_val_test = "cached_coco_val_test.json"
-            cached_test_test = "cached_coco_test_test.json"
+        cached_train = "cached_coco_train_"+origin_cap+".json"
+        cached_val = "cached_coco_val_"+origin_cap+".json"
+        cached_val_test = "cached_coco_val_test_"+origin_cap+".json"
+        cached_test_test = "cached_coco_test_test_"+origin_cap+".json"
+        if origin_cap=="transformer":
             origin = "captions_transformer.json"
-        elif flag=="kd3":
-            cached_train = "cached_coco_train_kd3.json"
-            cached_val = "cached_coco_val_kd3.json"
-            cached_val_test = "cached_coco_val_test.json"
-            cached_test_test = "cached_coco_test_test.json"
+        elif origin_cap=="kd3":
             origin = "captions_kd3.json"
+        else:
+            raise NotImplementedError
         if os.path.exists(os.path.join(root_path, cached_train)):
             self.train_samples = json.load(open(os.path.join(root_path, cached_train), "r"))
             self.val_samples = json.load(open(os.path.join(root_path, cached_val), "r"))
@@ -209,12 +218,12 @@ class COCO_KD:
                 cap_kd = sam['gen']
                 cap_gt = sam['gts']
                 
-                filepath = id_path(root_path, img_id, use_cache)
+                swin_dert_grid_path, swin_dert_region_path, image_path, up_down_36_path = id_path(root_path, img_id)
                 token_kd = [self.text_field.vocab.stoi[w] for w in self.text_field.preprocess(cap_kd)]
                 token_kd = token_kd + [text_field.vocab.stoi['<eos>']]
                 token_gt = [[self.text_field.vocab.stoi[w] for w in t] for t in self.text_field.preprocess(cap_gt)]
                 token_gt = [t+[text_field.vocab.stoi['<eos>']] for t in token_gt]
-                s = {"id":img_id, "image": filepath, "cap_kd":cap_kd, "token_kd": token_kd, "cap_gt":cap_gt, "token_gt": token_gt}
+                s = {"id":img_id, "swin_dert_grid_path": swin_dert_grid_path, "swin_dert_region_path": swin_dert_region_path, "image_path": image_path, "up_down_36_path": up_down_36_path, "cap_kd":cap_kd, "token_kd": token_kd, "cap_gt":cap_gt, "token_gt": token_gt}
                 
                 if img_id in ids_train:
                     self.train_samples.append(s)
@@ -241,24 +250,30 @@ def get_stop_words(text_field, stop_word_path):
         stop_word_ids.append(text_field.vocab.stoi[w])
     return stop_word_ids
     
-def build_coco_dataloaders(use_cache, data_path, batch_size, num_workers, flag='kd', device='cpu'):
-    cfg_transform = {
-        "size": [384, 640],
-        "resize_name": "maxwh", # normal, minmax, maxwh; maxwh is computationally friendly for training
-        "randaug": True
+def build_coco_dataloaders(data_path, batch_size, num_workers, origin_cap='transformer', transform=None, device='cpu'):
+    if transform is None:
+        cfg_transform = {
+            # "size": [384, 640],
+            "size": [224, 224],
+            "resize_name": "normal", # normal, minmax, maxwh; maxwh is computationally friendly for training
+            "randaug": True
+            }
+        transform = get_transform(cfg_transform)
+    else:
+        transform = {
+            "train": transform,
+            "valid": transform
         }
-    transform = get_transform(cfg_transform)
-    use_cache = use_cache
     text_field = TextField(vocab_path=os.path.join(data_path, "txt", "coco_vocabulary.txt"))
     stop_words = get_stop_words(text_field, os.path.join(data_path, "txt", "english"))
     # print(stop_words)
-    coco = COCO_KD(text_field, stop_words, data_path, use_cache, flag)
+    coco = COCO_KD(text_field, stop_words, data_path, origin_cap)
 
     datasets = {
-        'train': PairedDataset(coco.train_samples, transform['train'], use_cache, len(text_field.vocab), stop_words),
-        'valid': PairedDataset(coco.val_samples, transform['valid'], use_cache, len(text_field.vocab), stop_words),
-        'val_test': PairedDataset(coco.val_test_samples, transform['valid'], use_cache, len(text_field.vocab), stop_words),
-        'test_test': PairedDataset(coco.test_test_samples, transform['valid'], use_cache, len(text_field.vocab), stop_words),
+        'train': PairedDataset(coco.train_samples, transform['train'], len(text_field.vocab), stop_words),
+        'valid': PairedDataset(coco.val_samples, transform['valid'], len(text_field.vocab), stop_words),
+        'val_test': PairedDataset(coco.val_test_samples, transform['valid'], len(text_field.vocab), stop_words),
+        'test_test': PairedDataset(coco.test_test_samples, transform['valid'], len(text_field.vocab), stop_words),
     }
     # del coco
     # label = datasets['train'].__getitem__(120)[6]
@@ -267,26 +282,15 @@ def build_coco_dataloaders(use_cache, data_path, batch_size, num_workers, flag='
     #     print(l.sum(), end=" ")
     # print(label.shape)
     collators = {
-        'train': PairedCollator(use_cache, device=device),
-        'valid': PairedCollator(use_cache, device=device),
-        'val_test': PairedCollator(use_cache, device=device),
-        'test_test': PairedCollator(use_cache, device=device),
+        'train': PairedCollator(),
+        'valid': PairedCollator(),
+        'val_test': PairedCollator(),
+        'test_test': PairedCollator(),
     }
 
     batch_size = batch_size
     dataloaders = {}
-    if torch.cuda.device_count()>1:
-        from torch.utils.data.distributed import DistributedSampler
-        sampler = DistributedSampler(dataset=datasets['train'])
-        dataloaders['train'] = DataLoader(
-            datasets['train'],
-            batch_size=batch_size,
-            collate_fn=collators['train'],
-            num_workers=num_workers,
-            sampler=sampler
-        )
-    else:
-        dataloaders['train'] = DataLoader(
+    dataloaders['train'] = DataLoader(
             datasets['train'],
             batch_size=batch_size,
             collate_fn=collators['train'],
@@ -318,7 +322,7 @@ def build_coco_dataloaders(use_cache, data_path, batch_size, num_workers, flag='
         shuffle=False,
         pin_memory=True
     )
-    return dataloaders, text_field
+    return dataloaders, text_field, stop_words
 
 def build_coco_dataloaders_test4w(root_path="../mscoco", vocab_path="../mscoco/txt/coco_vocabulary.txt"):
     text_field = TextField(vocab_path=vocab_path)

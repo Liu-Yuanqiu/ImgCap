@@ -43,7 +43,7 @@ def evaluate_loss(model, dataloader):
                 samples['mask'] = samples['mask'].to(device)
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
-                losses = model.module.forward_encoderw(samples, labels)
+                losses = model.module.forward_ew(samples, labels)
 
                 loss = 0
                 for v in losses.values():
@@ -71,8 +71,8 @@ def evaluate_metrics(model, dataloader, text_field):
     with tqdm(desc='Epoch %d - evaluation' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
             image_id, samples, labels, caps_gt = batch['image_id'], batch['samples'], batch['labels'], batch['caps_gt']
-            samples['grid'] = samples['grid'].to(device)
-            samples['mask'] = samples['mask'].to(device)
+            samples['grid'] = samples['grid_sd'].to(device)
+            samples['mask'] = samples['grid_sd_mask'].to(device)
             labels = labels.to(device)
             with torch.no_grad():
                 logit = model.module.infer(samples)
@@ -107,7 +107,7 @@ def train_xe(model, dataloader, optim, text_field):
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
             
-                losses = model.module.forward_encoderw(samples, labels)
+                losses = model.module.forward_ew(samples, labels)
                 # print(losses)
                 optim.zero_grad()
                 loss = 0
@@ -281,20 +281,20 @@ if __name__ == '__main__':
     parser.add_argument('--test', action='store_true')
 
     parser.add_argument('--batch_size', type=int, default=64)
-    parser.add_argument('--workers', type=int, default=16)
+    parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--num_timesteps', type=int, default=100)
-    parser.add_argument('--sample_timesteps', type=int, default=100)
+    parser.add_argument('--sample_timesteps', type=int, default=500)
     parser.add_argument('--loop', type=int, default=10)
     parser.add_argument('--learning_rate', type=float, default=0.0001)
     parser.add_argument('--epoch1', type=int, default=100)
     parser.add_argument('--epoch2', type=int, default=200)
-    parser.add_argument('--patience', type=int, default=5)
+    parser.add_argument('--patience', type=int, default=10)
 
     parser.add_argument('--layer_num', type=int, default=3)
     parser.add_argument('--feat_dim', type=int, default=1024)
     parser.add_argument('--seq_len', type=int, default=20)
     parser.add_argument('--teacher_model_path', type=str, default='/s2s/kd_pe_gt20/s2s_best.pth')
-    parser.add_argument('--train_part', type=str, default='encoderw')
+    parser.add_argument('--train_part', type=str, default='ew')
     args = parser.parse_args()
     if args.test:
         args.batch_size = 4
@@ -308,33 +308,28 @@ if __name__ == '__main__':
 
     writer = SummaryWriter(log_dir=os.path.join(args.log_folder, args.exp_mode, args.exp_name))
 
-    dataloaders, text_field = build_coco_dataloaders(args.use_cache, args.data_path, args.batch_size, args.workers, flag=args.data_origin)
+    dataloaders, text_field = build_coco_dataloaders(args.data_path, args.batch_size, args.workers)
     cider_train = Cider()
     pprint(text_field.vocab.stoi['<bos>'])
     pprint(text_field.vocab.stoi['<pad>'])
 
     model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.seq_len, args.num_timesteps, args.sample_timesteps,\
                         N_en=args.layer_num, N_wo=args.layer_num, N_de=args.layer_num).to(device)
-    model.tensor_to(device)
+    # model.tensor_to(device)
 
-    if os.path.exists(os.path.join("./ckpts", "s2s", "kd_pe_gt20", "s2s_best.pth")):
-        data = torch.load(os.path.join("./ckpts", "s2s", "kd_pe_gt20", "s2s_best.pth"))
-        # torch.set_rng_state(data['torch_rng_state'])
-        # torch.cuda.set_rng_state(data['cuda_rng_state'])
-        # np.random.set_state(data['numpy_rng_state'])
-        # random.setstate(data['random_rng_state'])
-        # teacher_model.load_state_dict(data['state_dict'], strict=False)
-        # print('Teacher Model Resuming, best cider %f' % (data['best_cider']))
+    if os.path.exists(os.path.join("./ckpts", "s2s", "kd_gt20", "s2s_best.pth")):
+        data = torch.load(os.path.join("./ckpts", "s2s", "kd_gt20", "s2s_best.pth"))
+        pprint('Resuming teacher model, and best cider %f' % (data['best_cider']))
 
-        if args.train_part=="encoderw":
+        if args.train_part=="ew":
             teacher_model_dict = data['state_dict']
-            model_dict = {k:v for k,v in teacher_model_dict.items() if "encoderw" not in k and "timestep_emb" not in k}
+            model_dict = {k:v for k,v in teacher_model_dict.items() if "ew" not in k}
             model.load_state_dict(model_dict, strict=False)
             for n, p in model.named_parameters():
-                if "encoderw" not in n and "timestep_emb" not in n:
+                if "ew" not in n:
                     p.requires_grad = False
     # for n, p in model.named_parameters():
-    #     print(n, p.requires_grad)
+    #     pprint(n + str(p.requires_grad))
     model = DDP(model, device_ids=[args.local_rank], output_device=args.local_rank, find_unused_parameters=True)
     def lambda_lr(s):
         base_lr = args.learning_rate
@@ -370,9 +365,9 @@ if __name__ == '__main__':
             np.random.set_state(data['numpy_rng_state'])
             random.setstate(data['random_rng_state'])
             model.load_state_dict(data['state_dict'], strict=False)
-            optim.load_state_dict(data['optimizer'])
-            scheduler.load_state_dict(data['scheduler'])
-            scheduler.step()
+            # optim.load_state_dict(data['optimizer'])
+            # scheduler.load_state_dict(data['scheduler'])
+            # scheduler.step()
             start_epoch = data['epoch'] + 1
             best_cider = data['best_cider']
             patience = data['patience']
@@ -383,23 +378,23 @@ if __name__ == '__main__':
     pprint("Training starts")
     for e in range(start_epoch, start_epoch + 100):
         pprint("Epoch: %d, Learning Rate: %f" % (e, optim.param_groups[0]['lr']))
-        if not use_rl:
-            train_loss = train_xe(model, dataloaders['train'], optim, text_field)
-            if args.local_rank == 0:
-                writer.add_scalar('data/train_loss', train_loss, e)
-        else:
-            train_loss, reward, reward_baseline = train_scst(model, dataloaders['train'], optim, cider_train, text_field)
-            # writer.add_scalar('data/train_loss', train_loss, e)
-            # writer.add_scalar('data/reward', reward, e)
-            # writer.add_scalar('data/reward_baseline', reward_baseline, e)
+        # if not use_rl:
+        #     train_loss = train_xe(model, dataloaders['train'], optim, text_field)
+        #     if args.local_rank == 0:
+        #         writer.add_scalar('data/train_loss', train_loss, e)
+        # else:
+        #     train_loss, reward, reward_baseline = train_scst(model, dataloaders['train'], optim, cider_train, text_field)
+        #     # writer.add_scalar('data/train_loss', train_loss, e)
+        #     # writer.add_scalar('data/reward', reward, e)
+        #     # writer.add_scalar('data/reward_baseline', reward_baseline, e)
             
-        if not use_rl:
-            # Validation loss
-            val_loss = evaluate_loss(model, dataloaders['valid'])
-            if args.local_rank == 0:
-                writer.add_scalar('data/val_loss', val_loss, e)
-        else:
-            val_loss = 0.0
+        # if not use_rl:
+        #     # Validation loss
+        #     val_loss = evaluate_loss(model, dataloaders['valid'])
+        #     if args.local_rank == 0:
+        #         writer.add_scalar('data/val_loss', val_loss, e)
+        # else:
+        #     val_loss = 0.0
         dist.barrier()
         if args.local_rank==0:
             # Validation scores

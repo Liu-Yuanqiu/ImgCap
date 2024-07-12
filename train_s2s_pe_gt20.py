@@ -264,7 +264,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='S2S')
     parser.add_argument('--rank', type=str, default='0')
     parser.add_argument('--exp_mode', type=str, default='s2s')
-    parser.add_argument('--exp_name', type=str, default='diffusion_step100_sample100_loop10')
+    parser.add_argument('--exp_name', type=str, default='kd_gt20')
     parser.add_argument('--log_folder', type=str, default='./logs')
     parser.add_argument('--data_path', type=str, default='../mscoco')
     parser.add_argument('--data_origin', type=str, default='kd')
@@ -273,8 +273,8 @@ if __name__ == '__main__':
     parser.add_argument('--resume_best', action='store_true')
     parser.add_argument('--test', action='store_true')
 
-    parser.add_argument('--batch_size', type=int, default=96)
-    parser.add_argument('--workers', type=int, default=12)
+    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--num_timesteps', type=int, default=100)
     parser.add_argument('--sample_timesteps', type=int, default=100)
     parser.add_argument('--loop', type=int, default=10)
@@ -306,7 +306,7 @@ if __name__ == '__main__':
 
     model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.seq_len, args.num_timesteps, args.sample_timesteps,\
                         N_en=args.layer_num, N_wo=args.layer_num, N_de=args.layer_num).to(device)
-    model.tensor_to(device)
+    # model.tensor_to(device)
     def lambda_lr(s):
         base_lr = args.learning_rate
         if s <= 3:
