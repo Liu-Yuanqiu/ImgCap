@@ -5,14 +5,15 @@ from torch.nn import functional as F
 from models.attention import MultiHeadAttention, PositionWiseFeedForward, sinusoid_encoding_table
 from models.s2s.transformer import EncoderLayer, DecoderLayer
 class Transformer(nn.Module):
-    def __init__(self, feat_dim, vocab_size, padding_idx, \
+    def __init__(self, feat_dim, vocab_size, se_labels, padding_idx, \
                  K_add_word=False, N_en=3, N_wo=6, N_de=3, \
                  d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1):
         super(Transformer, self).__init__()
 
         self.feat_emb = nn.Linear(feat_dim, d_model)
         self.ei = nn.ModuleList([EncoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_en)])
-        self.ew_pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=True)
+        self.ew_word_emb = nn.Embedding(se_labels, d_model, 0)
+        self.ew_fc = nn.Linear(d_model, se_labels)
         self.ew = nn.ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_de)])
         self.de = nn.ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_de)])
         # self.de_word_emb = WordEmbedding(vocab_size, d_model, padding_idx)
@@ -25,10 +26,10 @@ class Transformer(nn.Module):
         self.kl_loss = nn.KLDivLoss(reduction="none")
         self.asym_loss = AsymmetricLossOptimized(disable_torch_grad_focal_loss=True)
     
-    def ce_label_smoothing(self, logit, target):
+    def ce_label_smoothing(self, logit, target, value):
         logP = F.log_softmax(logit.view(-1, logit.shape[-1]), dim=-1) 
         assign_seq = target.view(-1)
-        assign_seq[assign_seq < 3] = 0
+        assign_seq[assign_seq < value] = 0
         size = logP.size(1)
         true_dist = logP.clone()
         true_dist.fill_(self.label_smoothing / (size - 1))
@@ -44,47 +45,53 @@ class Transformer(nn.Module):
         for l in self.ei:
             feat = l(feat, feat, feat, feat_mask)
 
-        pos_indx = torch.arange(1, self.topk + 1, device=device).view(1, -1)
         _, w_topk = torch.topk(labels_gen, self.topk, dim=1, largest=True, sorted=True)
         _, w_topk_gt = torch.topk(labels_gt, self.topk, dim=1, largest=True, sorted=True)
-        w_topk_emb = self.de_word_emb(w_topk)
-        outw = w_topk_emb + self.ew_pos_emb(pos_indx).repeat(bs, 1, 1)
+        # w_topk_gt[w_topk_gt!=w_topk] = 1
+        w_topk_emb = self.ew_word_emb(w_topk)
+        outw = w_topk_emb
         for l in self.ew:
             outw = l(outw, outw, feat, feat_mask)
-        logit_ew = self.de_fc(outw)
-        loss_ew = self.ce_label_smoothing(logit_ew, w_topk_gt)
+        logit_ew = self.ew_fc(outw)
+        
+        loss_ew = self.ce_label_smoothing(logit_ew, w_topk_gt, 1)
         losses.update({"ew": loss_ew})
         # outw = torch.cat([w_topk_emb, outw], dim=1)
-        logit_ew_ml = torch.mean(logit_ew, dim=1)
+        logit_ew_ml, _ = torch.max(logit_ew, dim=1)
         loss_ml = self.asym_loss(logit_ew_ml, labels_gt.gt(0).float())
         losses.update({"ml": loss_ml})
         
+        pos_indx = torch.arange(1, self.topk + 1, device=device).view(1, -1)
         out = self.de_pos_emb(pos_indx).repeat(bs, 1, 1)
         for l in self.de:
             out = l(out, outw, feat, feat_mask)
         # ce
         logit_d1 = self.de_fc(out)
-        loss_s = self.ce_label_smoothing(logit_d1, tokens_kd)
+        
+        loss_s = self.ce_label_smoothing(logit_d1, tokens_kd, 3)
         losses.update({"de": loss_s})
         return losses
     
-    def infer(self, feat, feat_mask, labels):
+    def infer(self, feat, feat_mask, labels_gen):
         bs = feat.shape[0]
         device = feat.device
+        losses = {}
         feat = self.feat_emb(feat)
         for l in self.ei:
             feat = l(feat, feat, feat, feat_mask)
 
-        _, w_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
         pos_indx = torch.arange(1, self.topk + 1, device=device).view(1, -1)
+        _, w_topk = torch.topk(labels_gen, self.topk, dim=1, largest=True, sorted=True)
         w_topk_emb = self.de_word_emb(w_topk)
-        w_topk_emb = w_topk_emb + self.ew_pos_emb(pos_indx).repeat(bs, 1, 1)
+        outw = w_topk_emb + self.ew_pos_emb(pos_indx).repeat(bs, 1, 1)
         for l in self.ew:
-            w_topk_emb = l(w_topk_emb, w_topk_emb, feat, feat_mask)
+            outw = l(outw, outw, feat, feat_mask)
+        
         out = self.de_pos_emb(pos_indx).repeat(bs, 1, 1)
         for l in self.de:
-            out = l(out, w_topk_emb, feat, feat_mask)
-        logit = self.de_word_emb.fc(out)
+            out = l(out, outw, feat, feat_mask)
+        # ce
+        logit = self.de_fc(out)
         return F.log_softmax(logit, dim=-1)
 
 class WordEmbedding(nn.Module):

@@ -12,7 +12,6 @@ from einops import rearrange, reduce
 def decimal_to_bits(x, vocab_size, bits):
     """ expects image tensor ranging from 0 to 1, outputs bit tensor ranging from -1 to 1 """
     device = x.device
-
     x = x.clamp(0, vocab_size-1)
 
     mask = 2 ** torch.arange(bits - 1, -1, -1, device = device)

@@ -12,7 +12,7 @@ class Vocab(object):
             numerical identifiers.
         itos: A list of token strings indexed by their numerical identifiers.
     """
-    def __init__(self, vocab_path=None):
+    def __init__(self, vocab_path=None, tokens=None):
         """Create a Vocab object from a collections.Counter.
 
         Arguments:
@@ -35,7 +35,7 @@ class Vocab(object):
         """
         assert vocab_path is not None, "vocab_path is None"
         vocab = load_txt(vocab_path)
-        self.itos = ["<unk>", "<pad>", "<bos>", "<eos>"]
+        self.itos = tokens
         for v in vocab:
             self.itos.append(v)
         self.stoi = defaultdict(_default_unk_index)

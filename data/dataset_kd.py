@@ -264,7 +264,7 @@ def build_coco_dataloaders(data_path, batch_size, num_workers, origin_cap='trans
             "train": transform,
             "valid": transform
         }
-    text_field = TextField(vocab_path=os.path.join(data_path, "txt", "coco_vocabulary.txt"))
+    text_field = TextField(vocab_path=os.path.join(data_path, "txt", "coco_vocabulary.txt"), vocab_s_path=os.path.join(data_path, "txt", "se_labels.txt"))
     stop_words = get_stop_words(text_field, os.path.join(data_path, "txt", "english"))
     # print(stop_words)
     coco = COCO_KD(text_field, stop_words, data_path, origin_cap)

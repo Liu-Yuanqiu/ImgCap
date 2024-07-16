@@ -45,7 +45,7 @@ class TextField:
     def __init__(self, use_vocab=True, init_token="<bos>", eos_token="<eos>", fix_length=None, dtype=torch.long,
                  preprocessing=None, postprocessing=None, lower=True, tokenize="spacy",
                  remove_punctuation=True, include_lengths=False, batch_first=True, pad_token="<pad>",
-                 unk_token="<unk>", pad_first=False, truncate_first=False, vectors=None, nopoints=True, vocab_path=None):
+                 unk_token="<unk>", pad_first=False, truncate_first=False, vectors=None, nopoints=True, vocab_path=None, vocab_s_path=None):
         self.use_vocab = use_vocab
         self.init_token = init_token
         self.eos_token = eos_token
@@ -62,7 +62,8 @@ class TextField:
         self.unk_token = unk_token
         self.pad_first = pad_first
         self.truncate_first = truncate_first
-        self.vocab = Vocab(vocab_path=vocab_path)
+        self.vocab = Vocab(vocab_path=vocab_path, tokens=["<unk>", "<pad>", "<bos>", "<eos>"])
+        self.vocab_s = Vocab(vocab_path=vocab_s_path, tokens=["<unk>"])
         if nopoints:
             self.punctuations.append("..")
 

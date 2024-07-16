@@ -17,19 +17,16 @@ class Transformer(nn.Module):
                 N_en=3, N_wo=6, N_de=3, \
                 d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1):
         super(Transformer, self).__init__()
-        self.image_emb = nn.Sequential( 
-            nn.Linear(feat_dim, d_model), 
-            nn.ReLU(), 
-            nn.Dropout(p=0.1), 
-            nn.LayerNorm(d_model))
+        self.ei_image_emb = nn.Linear(feat_dim, d_model)
         self.ei = nn.ModuleList([EncoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_en)])
         self.ew = nn.ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_wo)])
         self.ew_bit_emb = BitEmbedding(vocab_size, d_model)
         self.ew_fc = nn.Linear(d_model, vocab_size)
-        self.decoder_word_emb = nn.Embedding(vocab_size, d_model, padding_idx=padding_idx)
-        self.decoder = nn.ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_de)])
-        self.decoder_pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
-        self.decoder_fc = nn.Linear(d_model, vocab_size)
+        # self.de_word_emb = nn.Embedding(vocab_size, d_model, padding_idx)
+        self.de_word_emb = WordEmbedding(vocab_size, d_model, padding_idx)
+        self.de = nn.ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_de)])
+        self.de_pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
+        self.de_fc = nn.Linear(d_model, vocab_size)
         self.vocab_size = vocab_size
         self.topk = topk
         self.dim = d_model
@@ -190,22 +187,33 @@ class Transformer(nn.Module):
         losses.update({"seq": loss_s})
         return losses
     
-    def forward_ew(self, images, labels):
-        gri_feat, gri_mask = images['grid'], images['mask']
-        gri_feat = self.image_emb(gri_feat)
+    def ce_label_smoothing(self, logit, target):
+        logP = F.log_softmax(logit.view(-1, logit.shape[-1]), dim=-1) 
+        assign_seq = target.view(-1)
+        assign_seq[assign_seq < 3] = 0
+        size = logP.size(1)
+        true_dist = logP.clone()
+        true_dist.fill_(self.label_smoothing / (size - 1))
+        true_dist.scatter_(1, assign_seq.data.unsqueeze(1), self.confidence)
+        loss = self.kl_loss(logP, true_dist).sum(1).mean()
+        return loss
+    
+    def forward_ew(self, feat, mask, labels, tokens_kd):
+        feat = self.ei_image_emb(feat)
 
-        bs = gri_feat.shape[0]
-        device = gri_feat.device
+        bs = feat.shape[0]
+        device = feat.device
 
-        enc_img = gri_feat
+        enc_img = feat
         for l in self.ei:
-            enc_img = l(enc_img, enc_img, enc_img, gri_mask)
+            enc_img = l(enc_img, enc_img, enc_img, mask)
 
         losses = {}
 
         ################# diffusion ####################
         _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
         gt_topk_bit = self.ew_bit_emb.get_bit_repr(gt_topk)
+        gt_topk_emb = self.de_word_emb.id_embed(gt_topk)
         noise = torch.randn_like(gt_topk_bit)
         times = torch.zeros((bs,), device = device).float().uniform_(0, 0.999)
         noise_level = beta_linear_log_snr(times)
@@ -216,29 +224,38 @@ class Transformer(nn.Module):
         self_conf = None
         if torch.rand(1).item() < 0.5:
             with torch.no_grad():
-                outwd = self.ew_bit_emb(x_start, times=times)
+                outwd1 = self.ew_bit_emb(x_start, times=times)
                 for l in self.ew:
-                    outwd = l(outwd, outwd, enc_img, gri_mask)
-                logit = self.ew_fc(outwd)
-                logit_w = self.ew_bit_emb.fc(logit)
+                    outwd1 = l(outwd1, outwd1, enc_img, mask)
+                logit1 = self.ew_fc(outwd1)
+                logit_w = self.ew_bit_emb.fc(logit1)
                 self_conf = logit_w.detach_()
 
         outwd = self.ew_bit_emb(x_start, times=times, self_conf=self_conf)
         for l in self.ew:
-            outwd = l(outwd, outwd, enc_img, gri_mask)
-        logit = self.ew_fc(outwd)
-        logit_w = self.ew_bit_emb.fc(logit)
-        loss_w = F.mse_loss(logit_w, gt_topk_bit)
-        losses.update({"mse": loss_w})
-        logP = F.log_softmax(logit.view(-1, logit.shape[-1]), dim=-1) 
-        assign_seq = gt_topk.view(-1)
-        assign_seq[assign_seq < 3] = 0
-        size = logP.size(1)
-        true_dist = logP.clone()
-        true_dist.fill_(self.label_smoothing / (size - 1))
-        true_dist.scatter_(1, assign_seq.data.unsqueeze(1), self.confidence)
-        loss_s = self.kl_loss(logP, true_dist).sum(1).mean()
-        losses.update({"ce": loss_s})
+            outwd = l(outwd, outwd, enc_img, mask)
+        loss_ew_emb = F.mse_loss(outwd, gt_topk_emb)
+        losses.update({"emb": loss_ew_emb})
+        logit_ew_ce = self.ew_fc(outwd)
+        loss_ew_ce = self.ce_label_smoothing(logit_ew_ce, gt_topk)
+        losses.update({"ewce": loss_ew_ce})
+        logit_ew_bit = self.ew_bit_emb.fc(logit_ew_ce)
+        loss_ew_bit = F.mse_loss(logit_ew_bit, gt_topk_bit)
+        losses.update({"bit": loss_ew_bit})
+        
+
+        # outw_ids = bits_to_decimal(logit_ew_bit, self.vocab_size, self.ew_bit_emb.bit_dim)
+        # outw_ids = outw_ids.clamp(3., 9489.).long()
+        # outw = self.de_word_emb.id_embed(outw_ids)
+        outw = outwd
+        pos_indx = torch.arange(1, self.topk + 1, device=enc_img.device).view(1, -1)
+        out = self.de_pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
+        for l in self.de:
+            out = l(out, outw, enc_img, mask)
+
+        logit_de_ce = self.de_fc(out)
+        loss_de_ce = self.ce_label_smoothing(logit_de_ce, tokens_kd)
+        losses.update({"dece": loss_de_ce})
         return losses
     
     def predict_start_from_noise(self, x_t, t, noise):
@@ -264,13 +281,12 @@ class Transformer(nn.Module):
         times = times.unbind(dim = -1)
         return times
     
-    def infer(self, images):
-        gri_feat, gri_mask = images['grid'], images['mask']
-        gri_feat = self.image_emb(gri_feat)
+    def infer(self, feat, mask):
+        feat = self.ei_image_emb(feat)
 
-        enc_img = gri_feat
+        enc_img = feat
         for l in self.ei:
-            enc_img = l(enc_img, enc_img, enc_img, gri_mask)
+            enc_img = l(enc_img, enc_img, enc_img, mask)
 
         bs = enc_img.shape[0]
         device = enc_img.device
@@ -283,8 +299,8 @@ class Transformer(nn.Module):
 
             outwd = self.ew_bit_emb(x, times=noise_cond, self_conf=x_start)
             for l in self.ew:
-                outwd = l(outwd, outwd, enc_img, gri_mask)
-            logit = self.decoder_fc(outwd)
+                outwd = l(outwd, outwd, enc_img, mask)
+            logit = self.ew_fc(outwd)
             logit_w = self.ew_bit_emb.fc(logit)
             x_start = logit_w
             x_start.clamp_(-self.ew_bit_emb.bit_scale, self.ew_bit_emb.bit_scale)
@@ -298,20 +314,17 @@ class Transformer(nn.Module):
             c = -expm1(log_snr - log_snr_next)
             mean = alpha_next * (x * (1-c) / alpha + c * x_start)
             x = mean
-        outw_ids = bits_to_decimal(x, self.vocab_size, self.ew_bit_emb.bit_dim)
-        outw_ids = outw_ids.clamp(0., 9489.).long()
-        outw = self.decoder_word_emb(outw_ids)
+        # outw_ids = bits_to_decimal(x, self.vocab_size, self.ew_bit_emb.bit_dim)
+        # outw_ids = outw_ids.clamp(3., 9489.).long()
+        # outw = self.de_word_emb.id_embed(outw_ids)
+        outw = outwd
         
         pos_indx = torch.arange(1, self.topk + 1, device=enc_img.device).view(1, -1)
-        if self.K_add_word:
-            out = outw + self.decoder_pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
-            outw = out
-        else:
-            out = self.decoder_pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
-        for l in self.decoder:
-            out = l(out, outw, enc_img, gri_mask)
+        out = self.de_pos_emb(pos_indx).repeat(enc_img.shape[0], 1, 1)
+        for l in self.de:
+            out = l(out, outw, enc_img, mask)
         
-        out = self.decoder_fc(out)
+        out = self.de_fc(out)
         return F.log_softmax(out, dim=-1)
     
     def forward_gt(self, images, labels, tokens_kd):
@@ -397,9 +410,10 @@ class BitEmbedding(nn.Module):
         )
         vocab_inds = torch.arange(0, vocab_size).long().view(1, vocab_size, 1, 1)
         self.vocab_bit_buffer = decimal_to_bits(vocab_inds, vocab_size=vocab_size, bits=self.bit_dim) * self.bit_scale
+    
     def get_bit_repr(self, input_ids):
         batch_size, seq_length = input_ids.shape
-        input_ids = input_ids.view(batch_size, seq_length, 1, 1) # the same as img: batch_size x channel x height x weight
+        input_ids = input_ids.reshape(batch_size, seq_length, 1, 1) # the same as img: batch_size x channel x height x weight
         input_ids_bit = decimal_to_bits(input_ids, vocab_size=self.vocab_size, bits=self.bit_dim) * self.bit_scale
         return input_ids_bit
     

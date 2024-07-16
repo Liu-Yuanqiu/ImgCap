@@ -114,10 +114,10 @@ def train_xe(model, dataloader, optim, text_field):
     running_loss = .0
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)*loop) as pbar:
         for it, batch in enumerate(dataloader):
-            image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
+            image_id, samples, labels, tokens_kd, caps_gt = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd'], batch['caps_gt']
             image = samples["img"]
-            labels_gen = preprocess(image)
-            labels_gt = labels.to(device)
+            labels_gen, labels_gt = preprocess(image, caps_gt)
+            # labels_gt = labels.to(device)
             if args.origin_fea == "swin_dert_grid":
                 feat, mask = samples["grid_sd"].to(device), samples["grid_sd_mask"].to(device)
             elif args.origin_fea == "swin_dert_region":
@@ -283,7 +283,7 @@ def train_scst1(model, dataloader, optim, cider, text_field):
     reward_baseline = running_reward_baseline / len(dataloader)
     return loss, reward, reward_baseline
 
-def preprocess(images):
+def preprocess(images, caps_gt):
     bs = images.shape[0]
     images = images.to(device)
     with torch.no_grad():
@@ -301,15 +301,24 @@ def preprocess(images):
         # print(caps_idx)
         caps_ = [caps[i] for i in caps_idx]
         # labels = torch.zeros(bs, len(text_field.vocab)).to(device)
-        labels = np.zeros((bs, len(text_field.vocab)), dtype=np.float32)
+        labels_gen = np.zeros((bs, len(text_field.vocab_s)), dtype=np.float32)
+        labels_gt = np.zeros((bs, len(text_field.vocab_s)), dtype=np.float32)
         for i in range(bs):
             caps_now = caps_[i*caps_num:(i+1)*caps_num]
             for t in text_field.preprocess(caps_now):
                 for w in t:
-                    wid = text_field.vocab.stoi[w]
-                    if wid not in [0, 1, 2, 3] and wid not in stop_words:
-                        labels[i, wid] += 1
-    return torch.from_numpy(labels).to(device)
+                    wid = text_field.vocab_s.stoi[w]
+                    # if wid not in [0, 1, 2, 3] and wid not in stop_words:
+                    if wid not in [0, 1]:
+                        labels_gen[i, wid] += 1
+            caps_gt_now = caps_gt[i]
+            for t in text_field.preprocess(caps_gt_now):
+                for w in t:
+                    wid = text_field.vocab_s.stoi[w]
+                    # if wid not in [0, 1, 2, 3] and wid not in stop_words:
+                    if wid not in [0, 1]:
+                        labels_gt[i, wid] += 1
+    return torch.from_numpy(labels_gen).to(device), torch.from_numpy(labels_gt).to(device)
 
 def get_caps(data_path):
     train_data = json.load(open(os.path.join(data_path, "cached_coco_img_train.json")))
@@ -398,7 +407,7 @@ if __name__ == '__main__':
         args.feat_dim = 2048
     else:
         raise NotImplementedError
-    model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.seq_len,\
+    model = Transformer(args.feat_dim, len(text_field.vocab), len(text_field.vocab_s), text_field.vocab.stoi['<pad>'], args.seq_len,\
                         N_en=args.layer_num, N_wo=args.layer_num, N_de=args.layer_num).to(device)
     # model.tensor_to(device)
     def lambda_lr(s):

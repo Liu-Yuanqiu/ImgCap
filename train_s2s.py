@@ -37,12 +37,18 @@ def evaluate_loss(model, dataloader):
     with tqdm(desc='Epoch %d - validation' % e, unit='it', total=len(dataloader)) as pbar:
         with torch.no_grad():
             for it, batch in enumerate(dataloader):
-                image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
-                samples['grid'] = samples['grid'].to(device)
-                samples['mask'] = samples['mask'].to(device)
+                samples, labels, tokens_kd = batch['samples'], batch['labels'], batch['tokens_kd']
+                if args.origin_fea == "swin_dert_grid":
+                    feat, mask = samples["grid_sd"].to(device), samples["grid_sd_mask"].to(device)
+                elif args.origin_fea == "swin_dert_region":
+                    feat, mask = samples["region_sd"].to(device), samples["region_sd_mask"].to(device)
+                elif args.origin_fea == "up_down_36":
+                    feat, mask = samples["region_ud"].to(device), None
+                else:
+                    raise NotImplementedError
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
-                losses = model(samples, labels, tokens_kd)
+                losses = model.forward_ew(feat, mask, labels, tokens_kd)
 
                 loss = 0
                 for v in losses.values():
@@ -69,12 +75,17 @@ def evaluate_metrics(model, dataloader, text_field):
     gts = {}
     with tqdm(desc='Epoch %d - evaluation' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
-            image_id, samples, labels, caps_gt = batch['image_id'], batch['samples'], batch['labels'], batch['caps_gt']
-            samples['grid'] = samples['grid'].to(device)
-            samples['mask'] = samples['mask'].to(device)
-            labels = labels.to(device)
+            samples, labels, caps_gt = batch['samples'], batch['labels'], batch['caps_gt']
+            if args.origin_fea == "swin_dert_grid":
+                feat, mask = samples["grid_sd"].to(device), samples["grid_sd_mask"].to(device)
+            elif args.origin_fea == "swin_dert_region":
+                feat, mask = samples["region_sd"].to(device), samples["region_sd_mask"].to(device)
+            elif args.origin_fea == "up_down_36":
+                feat, mask = samples["region_ud"].to(device), None
+            else:
+                raise NotImplementedError
             with torch.no_grad():
-                logit = model.infer(samples)
+                logit = model.infer(feat, mask)
             
             _, out = torch.max(logit, -1)
             caps_gen = text_field.decode(out, join_words=False, deduplication=True)
@@ -97,15 +108,23 @@ def train_xe(model, dataloader, optim, text_field):
     model.train()
     loop = args.loop
     running_loss = .0
+    torch.autograd.set_detect_anomaly(True)
     with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)*loop) as pbar:
-        for it, batch in enumerate(dataloader):
-            image_id, samples, labels, tokens_kd = batch['image_id'], batch['samples'], batch['labels'], batch['tokens_kd']
-            samples['grid'] = samples['grid'].to(device)
-            samples['mask'] = samples['mask'].to(device)
-            labels = labels.to(device)
-            tokens_kd = tokens_kd.to(device)
-            for i in range(loop):
-                losses = model(samples, labels, tokens_kd)
+        for i in range(loop):
+            for it, batch in enumerate(dataloader):
+                samples, labels, tokens_kd = batch['samples'], batch['labels'], batch['tokens_kd']
+                if args.origin_fea == "swin_dert_grid":
+                    feat, mask = samples["grid_sd"].to(device), samples["grid_sd_mask"].to(device)
+                elif args.origin_fea == "swin_dert_region":
+                    feat, mask = samples["region_sd"].to(device), samples["region_sd_mask"].to(device)
+                elif args.origin_fea == "up_down_36":
+                    feat, mask = samples["region_ud"].to(device), None
+                else:
+                    raise NotImplementedError
+                labels = labels.to(device)
+                tokens_kd = tokens_kd.to(device)
+            
+                losses = model.forward_ew(feat, mask, labels, tokens_kd)
                 # print(losses)
                 optim.zero_grad()
                 loss = 0
@@ -120,11 +139,14 @@ def train_xe(model, dataloader, optim, text_field):
                 for k in losses:
                     item = '%.4f' % losses[k].item()
                     losses_info[k] = item
-                pbar.set_postfix(loss=running_loss / (it*loop + i + 1), losses=losses_info)
+                pbar.set_postfix(loss=running_loss / (i*len(dataloader) + it + 1), losses=losses_info)
                 pbar.update()
 
+                if args.test and it==10:
+                    break
             if args.test:
                 break
+            
     
     loss = running_loss / len(dataloader)
     return loss
@@ -263,11 +285,12 @@ def train_scst1(model, dataloader, optim, cider, text_field):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='S2S')
     parser.add_argument('--rank', type=str, default='0')
-    parser.add_argument('--exp_mode', type=str, default='s2s')
-    parser.add_argument('--exp_name', type=str, default='diffusion_step100_sample100_loop10')
+    parser.add_argument('--exp_mode', type=str, default='naicdm')
+    parser.add_argument('--exp_name', type=str, default='kd_sdg')
     parser.add_argument('--log_folder', type=str, default='./logs')
     parser.add_argument('--data_path', type=str, default='../mscoco')
-    parser.add_argument('--data_origin', type=str, default='kd')
+    parser.add_argument('--origin_cap', type=str, default='transformer')
+    parser.add_argument('--origin_fea', type=str, default='swin_dert_grid')
     parser.add_argument('--use_cache', action='store_true', default='True')
     parser.add_argument('--resume_last', action='store_true')
     parser.add_argument('--resume_best', action='store_true')
@@ -276,7 +299,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=96)
     parser.add_argument('--workers', type=int, default=12)
     parser.add_argument('--num_timesteps', type=int, default=100)
-    parser.add_argument('--sample_timesteps', type=int, default=100)
+    parser.add_argument('--sample_timesteps', type=int, default=50)
     parser.add_argument('--loop', type=int, default=10)
     parser.add_argument('--learning_rate', type=float, default=0.0001)
     parser.add_argument('--epoch1', type=int, default=100)
@@ -299,11 +322,17 @@ if __name__ == '__main__':
 
     writer = SummaryWriter(log_dir=os.path.join(args.log_folder, args.exp_mode, args.exp_name))
 
-    dataloaders, text_field = build_coco_dataloaders(args.use_cache, args.data_path, args.batch_size, args.workers, flag=args.data_origin)
+    dataloaders, text_field, stop_words = build_coco_dataloaders(args.data_path, args.batch_size, args.workers, origin_cap=args.origin_cap)
     cider_train = Cider()
-    print(text_field.vocab.stoi['<bos>'])
-    print(text_field.vocab.stoi['<pad>'])
-
+    print("UNK: %d, PAD: %d, BOS: %d, EOS: %d" % (text_field.vocab.stoi['<unk>'], text_field.vocab.stoi['<pad>'], text_field.vocab.stoi['<bos>'], text_field.vocab.stoi['<eos>']))
+    if args.origin_fea == "swin_dert_grid":
+        args.feat_dim = 1024
+    elif args.origin_fea == "swin_dert_region":
+        args.feat_dim = 512
+    elif args.origin_fea == "up_down_36":
+        args.feat_dim = 2048
+    else:
+        raise NotImplementedError
     model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.seq_len, args.num_timesteps, args.sample_timesteps,\
                         N_en=args.layer_num, N_wo=args.layer_num, N_de=args.layer_num).to(device)
     model.tensor_to(device)
