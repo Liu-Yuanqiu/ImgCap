@@ -10,7 +10,7 @@ from torch.distributions import Categorical
 from einops import rearrange, reduce
 from models.containers import ModuleList
 from models.attention import MultiHeadAttention, PositionWiseFeedForward, sinusoid_encoding_table
-from .utils import *
+from models.utils import *
 class Transformer(nn.Module):
     def __init__(self, feat_dim, vocab_size, padding_idx, topk, num_timesteps, sampling_timesteps=None, ddim_sampling_eta=0.,\
                 K_add_word=False, \
