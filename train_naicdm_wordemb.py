@@ -2,7 +2,6 @@ import random
 import evaluation
 from evaluation import Cider
 from data.dataset_kd import build_coco_dataloaders
-from models.naicdm.naicdm import Transformer
 import torch
 from torch.optim import Adam
 from torch.optim.lr_scheduler import LambdaLR
@@ -279,8 +278,8 @@ def train_scst1(model, dataloader, optim, cider, text_field):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='NAICDM')
     parser.add_argument('--rank', type=str, default='0')
-    parser.add_argument('--exp_mode', type=str, default='naicdm1')
-    parser.add_argument('--exp_name', type=str, default='0719')
+    parser.add_argument('--exp_mode', type=str, default='naicdm_wordemb')
+    parser.add_argument('--exp_name', type=str, default='kd_sdg_')
     parser.add_argument('--log_folder', type=str, default='./logs')
     parser.add_argument('--data_path', type=str, default='../mscoco')
     parser.add_argument('--origin_cap', type=str, default='transformer')
@@ -290,10 +289,10 @@ if __name__ == '__main__':
     parser.add_argument('--resume_best', action='store_true')
     parser.add_argument('--test', action='store_true')
 
-    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--workers', type=int, default=8)
-    parser.add_argument('--num_timesteps', type=int, default=10)
-    parser.add_argument('--sample_timesteps', type=int, default=10)
+    parser.add_argument('--num_timesteps', type=int, default=100)
+    parser.add_argument('--sample_timesteps', type=int, default=100)
     parser.add_argument('--loop', type=int, default=10)
     parser.add_argument('--learning_rate', type=float, default=0.0001)
     parser.add_argument('--epoch1', type=int, default=100)
@@ -326,6 +325,10 @@ if __name__ == '__main__':
         args.feat_dim = 2048
     else:
         raise NotImplementedError
+    if "loop" in args.exp_name:
+        from models.naicdm.naicdm1_wordemb import Transformer
+    else:
+        from models.naicdm.naicdm_wordemb import Transformer
     model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.seq_len, \
                         args.num_timesteps, args.sample_timesteps,\
                         N_en=args.layer_num, N_wo=args.layer_num, N_de=args.layer_num).to(device)
@@ -375,7 +378,6 @@ if __name__ == '__main__':
 
     print("Training starts")
     for e in range(start_epoch, start_epoch + 100):
-        print("Epoch: %d, Learning Rate: %f" % (e, optim.param_groups[0]['lr']))
         if e<10:
             ratio = 0.1 * (10 - e)
         else:

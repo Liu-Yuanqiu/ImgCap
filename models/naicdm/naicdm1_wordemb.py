@@ -41,10 +41,10 @@ class Transformer(nn.Module):
         self.ew_time_emb = TimestepEmbedder(d_model)
         self.ew = nn.ModuleList([DiffusionDecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_wo)])
 
-        self.de_word_emb = nn.Embedding(vocab_size, d_model, padding_idx)
+        self.de_word_emb = WordEmbedding(vocab_size, d_model, padding_idx)
         self.de = nn.ModuleList([DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_de)])
         self.de_pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(200, d_model, 1), freeze=False)
-        self.de_fc = nn.Linear(d_model, vocab_size)
+        # self.de_fc = nn.Linear(d_model, vocab_size)
 
         self.vocab_size = vocab_size
         self.topk = topk
@@ -117,9 +117,10 @@ class Transformer(nn.Module):
             extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
     
-    def forward(self, feat, feat_mask, labels, tokens_kd, ratio=0):
+    def forward(self, feat, feat_mask, labels, tokens_kd, ratio=0.):
         bs = feat.shape[0]
         device = feat.device
+        losses = {}
 
         feat = self.ei_image_emb(feat)
         for layer in self.ei:
@@ -128,20 +129,40 @@ class Transformer(nn.Module):
         _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
         gt_topk_emb = self.de_word_emb(gt_topk)
 
-        ew_noise = torch.randn_like(gt_topk_emb)
-        ew_batch_times = torch.randint(0, self.num_timesteps, (bs,), device=device)
-        ew_x = self.q_sample(x_start=gt_topk_emb, t=ew_batch_times, noise=ew_noise)
-        outw = ew_x.to(torch.float32)
-        ew_batch_times_emb = self.ew_time_emb(ew_batch_times)
-        for layer in self.ew:
-            outw = layer(outw, ew_batch_times_emb, feat, feat_mask)
-        if self.objective == 'pred_noise':
-            ew_target = ew_noise
-        elif self.objective == 'pred_x0':
-            ew_target = gt_topk_emb
-        elif self.objective == 'pred_v':
-            ew_v = self.predict_v(gt_topk_emb, ew_batch_times, ew_noise)
-            ew_target = ew_v
+        ew_mse = []
+        ew_x = torch.randn((bs, self.topk, self.dim), device=device)
+        ew_x_start = None
+        for t in reversed(range(0, self.num_timesteps)):
+            ew_batched_times = torch.full((bs,), t, device = device, dtype = torch.long)
+                    
+            ew_batched_times_emb = self.ew_time_emb(ew_batched_times)
+            for l in self.ew:
+                ew_x = l(ew_x, ew_batched_times_emb, feat, feat_mask)
+
+            if self.objective == 'pred_noise':
+                ew_pred_noise = ew_x
+                ew_x_start = self.predict_start_from_noise(ew_x, ew_batched_times, ew_pred_noise)
+            elif self.objective == 'pred_x0':
+                ew_x_start = ew_x
+                ew_pred_noise = self.predict_noise_from_start(ew_x, ew_batched_times, ew_x_start)
+            elif self.objective == 'pred_v':
+                ew_v = ew_x
+                ew_x_start = self.predict_start_from_v(ew_x, ew_batched_times, ew_v)
+                ew_pred_noise = self.predict_noise_from_start(ew_x, ew_batched_times, ew_x_start)
+            
+            ew_x_start.clamp_(-1., 1.)
+            
+            ew_model_mean = (
+                extract(self.posterior_mean_coef1, ew_batched_times, ew_x.shape) * ew_x_start +
+                extract(self.posterior_mean_coef2, ew_batched_times, ew_x.shape) * ew_x
+            )
+            # posterior_variance = extract(self.posterior_variance, batched_times, x.shape)
+            ew_model_log_variance = extract(self.posterior_log_variance_clipped, ew_batched_times, ew_x.shape)
+            ew_noise = torch.randn_like(ew_x) if t > 0 else 0. # no noise if t == 0
+            ew_x = ew_model_mean + (0.5 * ew_model_log_variance).exp() * ew_noise
+            ew_mse.append(F.mse_loss(ew_x_start, gt_topk_emb))
+        outw = self.unnormalize(ew_x)
+        losses.update({"ew_mse": torch.cat(ew_mse, dim=0).mean()})
 
         if torch.rand(1).item() < ratio:
             outwd = gt_topk_emb
@@ -151,29 +172,7 @@ class Transformer(nn.Module):
         out = self.de_pos_emb(pos_indx).repeat(bs, 1, 1)
         for layer in self.de:
             out = layer(out, outwd, feat, feat_mask)
-        logit = self.de_fc(out)
-        # times = torch.zeros((bs,), device = device).float().uniform_(0, 0.999)
-        # noise_level = beta_linear_log_snr(times)
-        # padded_noise_level = right_pad_dims_to(gt_topk_emb, noise_level)
-        # alpha, sigma = log_snr_to_alpha_sigma(padded_noise_level)
-        # ew_start = alpha * gt_topk_emb + sigma * ew_noise
-        # outwd = ew_start
-        # for layer in self.ew:
-        #     outwd = layer(outwd, outwd, feat, feat_mask)
-        
-        # tokens_kd_emb = self.de_word_emb(tokens_kd)
-        # de_noise = torch.randn_like(tokens_kd_emb)
-        # times = torch.zeros((bs,), device = device).float().uniform_(0, 0.999)
-        # noise_level = beta_linear_log_snr(times)
-        # padded_noise_level = right_pad_dims_to(gt_topk_emb, noise_level)
-        # alpha, sigma = log_snr_to_alpha_sigma(padded_noise_level)
-        # de_start = alpha * tokens_kd_emb + sigma * de_noise
-        # out = de_start
-        # for layer in self.de:
-        #     out = layer(out, outwd, feat, feat_mask)
-        # logit = self.de_fc(out)
-        losses = {}
-        losses.update({"ew_mse": F.mse_loss(outw, ew_target)})
+        logit = self.de_word_emb(out)
         losses.update({"de_ce": self.ce_label_smoothing(logit, tokens_kd)})
         return losses
 
@@ -244,9 +243,28 @@ class Transformer(nn.Module):
         out = self.de_pos_emb(pos_indx).repeat(bs, 1, 1)
         for layer in self.de:
             out = layer(out, outw, feat, feat_mask)
-        logit = self.de_fc(out)
+        logit = self.de_word_emb(out)
         return F.log_softmax(logit, dim=-1)
+
+class WordEmbedding(nn.Module):
+    def __init__(self, vocab_size, dim, padding_idx):
+        super(WordEmbedding, self).__init__()
+        self.vocab_size = vocab_size
+        self.dim = dim
+        self.padding_idx = padding_idx
+        self.weight = nn.Parameter(torch.randn(self.vocab_size, self.dim))
+        if self.padding_idx is not None:
+            with torch.no_grad():
+                self.weight[self.padding_idx].fill_(0)
     
+    def forward(self, tensor):
+        if len(tensor.shape)==2:
+            return torch.matmul(F.one_hot(tensor, num_classes=self.vocab_size).type(torch.float32), self.weight)
+        elif len(tensor.shape)==3:
+            return torch.matmul(tensor, self.weight.t())
+        else:
+            raise NotImplementedError
+        
 class TimestepEmbedder(nn.Module):
     """
     Embeds scalar timesteps into vector representations.
