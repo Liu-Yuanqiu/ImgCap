@@ -279,7 +279,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='NAICDM')
     parser.add_argument('--rank', type=str, default='0')
     parser.add_argument('--exp_mode', type=str, default='naicdm_wordemb')
-    parser.add_argument('--exp_name', type=str, default='kd_sdg_')
+    parser.add_argument('--exp_name', type=str, default='kd_sdg')
     parser.add_argument('--log_folder', type=str, default='./logs')
     parser.add_argument('--data_path', type=str, default='../mscoco')
     parser.add_argument('--origin_cap', type=str, default='transformer')

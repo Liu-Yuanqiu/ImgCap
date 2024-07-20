@@ -120,7 +120,7 @@ class Transformer(nn.Module):
     def forward(self, feat, feat_mask, labels, tokens_kd, ratio=0):
         bs = feat.shape[0]
         device = feat.device
-
+        losses = {}
         feat = self.ei_image_emb(feat)
         for layer in self.ei:
             feat = layer(feat, feat, feat, feat_mask)
@@ -147,34 +147,22 @@ class Transformer(nn.Module):
             outwd = gt_topk_emb
         else:
             outwd = outw
+            
         pos_indx = torch.arange(1, self.topk + 1, device=device).view(1, -1)
         out = self.de_pos_emb(pos_indx).repeat(bs, 1, 1)
         for layer in self.de:
             out = layer(out, outwd, feat, feat_mask)
         logit = self.de_fc(out)
-        # times = torch.zeros((bs,), device = device).float().uniform_(0, 0.999)
-        # noise_level = beta_linear_log_snr(times)
-        # padded_noise_level = right_pad_dims_to(gt_topk_emb, noise_level)
-        # alpha, sigma = log_snr_to_alpha_sigma(padded_noise_level)
-        # ew_start = alpha * gt_topk_emb + sigma * ew_noise
-        # outwd = ew_start
-        # for layer in self.ew:
-        #     outwd = layer(outwd, outwd, feat, feat_mask)
         
-        # tokens_kd_emb = self.de_word_emb(tokens_kd)
-        # de_noise = torch.randn_like(tokens_kd_emb)
-        # times = torch.zeros((bs,), device = device).float().uniform_(0, 0.999)
-        # noise_level = beta_linear_log_snr(times)
-        # padded_noise_level = right_pad_dims_to(gt_topk_emb, noise_level)
-        # alpha, sigma = log_snr_to_alpha_sigma(padded_noise_level)
-        # de_start = alpha * tokens_kd_emb + sigma * de_noise
-        # out = de_start
-        # for layer in self.de:
-        #     out = layer(out, outwd, feat, feat_mask)
-        # logit = self.de_fc(out)
-        losses = {}
+        logP = F.log_softmax(logit.view(-1, logit.shape[-1]), dim=-1) 
+        assign_seq = tokens_kd.view(-1)
+        assign_seq[assign_seq < 3] = 0
+        size = logP.size(1)
+        true_dist = logP.clone()
+        true_dist.fill_(self.label_smoothing / (size - 1))
+        true_dist.scatter_(1, assign_seq.data.unsqueeze(1), self.confidence)
         losses.update({"ew_mse": F.mse_loss(outw, ew_target)})
-        losses.update({"de_ce": self.ce_label_smoothing(logit, tokens_kd)})
+        losses.update({"de_ce": self.kl_loss(logP, true_dist).sum(1).mean()})
         return losses
 
     def get_sampling_timesteps(self, batch, device):
@@ -247,6 +235,25 @@ class Transformer(nn.Module):
         logit = self.de_fc(out)
         return F.log_softmax(logit, dim=-1)
     
+class WordEmbedding(nn.Module):
+    def __init__(self, vocab_size, dim, padding_idx):
+        super(WordEmbedding, self).__init__()
+        self.vocab_size = vocab_size
+        self.dim = dim
+        self.padding_idx = padding_idx
+        self.weight = nn.Parameter(torch.randn(self.vocab_size, self.dim))
+        if self.padding_idx is not None:
+            with torch.no_grad():
+                self.weight[self.padding_idx].fill_(0)
+    
+    def forward(self, tensor):
+        if len(tensor.shape)==2:
+            return torch.matmul(F.one_hot(tensor, num_classes=self.vocab_size).type(torch.float32), self.weight)
+        elif len(tensor.shape)==3:
+            return torch.matmul(tensor, self.weight.t())
+        else:
+            raise NotImplementedError
+        
 class TimestepEmbedder(nn.Module):
     """
     Embeds scalar timesteps into vector representations.

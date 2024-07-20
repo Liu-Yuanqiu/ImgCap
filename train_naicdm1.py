@@ -2,7 +2,7 @@ import random
 import evaluation
 from evaluation import Cider
 from data.dataset_kd import build_coco_dataloaders
-from models.naicdm.naicdm import Transformer
+from models.naicdm.naicdm1 import Transformer
 import torch
 from torch.optim import Adam
 from torch.optim.lr_scheduler import LambdaLR
@@ -118,7 +118,7 @@ def train_xe(model, dataloader, optim, text_field):
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
             
-                losses = model(feat, mask, labels, tokens_kd)
+                losses = model(feat, mask, labels, tokens_kd, ratio)
                 # print(losses)
                 optim.zero_grad()
                 loss = 0
@@ -279,8 +279,8 @@ def train_scst1(model, dataloader, optim, cider, text_field):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='NAICDM')
     parser.add_argument('--rank', type=str, default='0')
-    parser.add_argument('--exp_mode', type=str, default='naicdm1')
-    parser.add_argument('--exp_name', type=str, default='kd_sdg')
+    parser.add_argument('--exp_mode', type=str, default='naicdm_wordemb')
+    parser.add_argument('--exp_name', type=str, default='kd_sdg_wo_embfc')
     parser.add_argument('--log_folder', type=str, default='./logs')
     parser.add_argument('--data_path', type=str, default='../mscoco')
     parser.add_argument('--origin_cap', type=str, default='transformer')
@@ -290,10 +290,10 @@ if __name__ == '__main__':
     parser.add_argument('--resume_best', action='store_true')
     parser.add_argument('--test', action='store_true')
 
-    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--workers', type=int, default=8)
-    parser.add_argument('--num_timesteps', type=int, default=10)
-    parser.add_argument('--sample_timesteps', type=int, default=10)
+    parser.add_argument('--num_timesteps', type=int, default=100)
+    parser.add_argument('--sample_timesteps', type=int, default=100)
     parser.add_argument('--loop', type=int, default=10)
     parser.add_argument('--learning_rate', type=float, default=0.0001)
     parser.add_argument('--epoch1', type=int, default=100)
@@ -376,6 +376,11 @@ if __name__ == '__main__':
     print("Training starts")
     for e in range(start_epoch, start_epoch + 100):
         print("Epoch: %d, Learning Rate: %f" % (e, optim.param_groups[0]['lr']))
+        if e<10:
+            ratio = 0.1 * (10 - e)
+        else:
+            ratio = 0
+        print("Epoch: %d, Learning Rate: %f, Ratio: %f" % (e, optim.param_groups[0]['lr'], ratio))
         if not use_rl:
             train_loss = train_xe(model, dataloaders['train'], optim, text_field)
             writer.add_scalar('data/train_loss', train_loss, e)

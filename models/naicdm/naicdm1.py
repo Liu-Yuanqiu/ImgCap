@@ -117,7 +117,7 @@ class Transformer(nn.Module):
             extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
         )
     
-    def forward(self, feat, feat_mask, labels, tokens_kd):
+    def forward(self, feat, feat_mask, labels, tokens_kd, ratio=0):
         bs = feat.shape[0]
         device = feat.device
         losses = {}
@@ -137,7 +137,7 @@ class Transformer(nn.Module):
                     
             ew_batched_times_emb = self.ew_time_emb(ew_batched_times)
             for l in self.ew:
-                ew_x = l(ew_x, ew_x, ew_batched_times_emb, feat, feat_mask)
+                ew_x = l(ew_x, ew_batched_times_emb, feat, feat_mask)
 
             if self.objective == 'pred_noise':
                 ew_pred_noise = ew_x
@@ -162,9 +162,9 @@ class Transformer(nn.Module):
             ew_x = ew_model_mean + (0.5 * ew_model_log_variance).exp() * ew_noise
             ew_mse.append(F.mse_loss(ew_x_start, gt_topk_emb))
         outw = self.unnormalize(ew_x)
-        losses.update({"ew_mse": torch.cat(ew_mse, dim=0).mean()})
+        losses.update({"ew_mse": torch.stack(ew_mse).mean()})
 
-        if torch.rand(1).item() < 0.5:
+        if torch.rand(1).item() < ratio:
             outwd = gt_topk_emb
         else:
             outwd = outw
