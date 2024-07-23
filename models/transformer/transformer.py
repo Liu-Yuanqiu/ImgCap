@@ -6,10 +6,9 @@ from ..captioning_model import CaptioningModel
 
 
 class Transformer(CaptioningModel):
-    def __init__(self, bos_idx, detector, encoder, decoder):
+    def __init__(self, bos_idx, encoder, decoder):
         super(Transformer, self).__init__()
         self.bos_idx = bos_idx
-        self.detector = detector
         self.encoder = encoder
         self.decoder = decoder
         # image embed
@@ -32,16 +31,9 @@ class Transformer(CaptioningModel):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, images, seq):
-        if self.detector is None:
-            gri_feat, gri_mask = images['grid'], images['mask']
-            gri_feat = self.embed_image(gri_feat)
-        else:
-            outputs = self.detector(images)
-            gri_feat, gri_mask = outputs['gri_feat'], outputs['gri_mask']
-            gri_feat = self.embed_image(gri_feat)
-        mask_enc = gri_mask
-        enc_output = self.encoder(gri_feat, mask_enc)
+    def forward(self, images, seq, *args):
+        images = self.embed_image(images)
+        enc_output, mask_enc = self.encoder(images)
         dec_output = self.decoder(seq, enc_output, mask_enc)
         return dec_output
 
@@ -55,18 +47,12 @@ class Transformer(CaptioningModel):
             raise NotImplementedError
         elif mode == 'feedback':
             if t == 0:
-                if self.detector is None:
-                    gri_feat, gri_mask = visual['grid'], visual['mask']
-                    gri_feat = self.embed_image(gri_feat)
+                visual = self.embed_image(visual)
+                self.enc_output, self.mask_enc = self.encoder(visual)
+                if isinstance(visual, torch.Tensor):
+                    it = visual.data.new_full((visual.shape[0], 1), self.bos_idx).long()
                 else:
-                    outputs = self.detector(visual)
-                    gri_feat, gri_mask = outputs['gri_feat'], outputs['gri_mask']
-                self.mask_enc = gri_mask
-                self.enc_output = self.encoder(gri_feat, gri_mask)
-                if isinstance(gri_feat, torch.Tensor):
-                    it = gri_feat.data.new_full((gri_feat.shape[0], 1), self.bos_idx).long()
-                else:
-                    it = gri_feat[0].data.new_full((gri_feat[0].shape[0], 1), self.bos_idx).long()
+                    it = visual[0].data.new_full((visual[0].shape[0], 1), self.bos_idx).long()
             else:
                 it = prev_output
 

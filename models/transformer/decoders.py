@@ -2,31 +2,21 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from models.attention import MultiHeadAttention, sinusoid_encoding_table, PositionWiseFeedForward
+from models.transformer.attention import MultiHeadAttention
+from models.transformer.utils import sinusoid_encoding_table, PositionWiseFeedForward
 from models.containers import Module, ModuleList
 
-class WordEmbedding(nn.Module):
-    def __init__(self, vocab_size, dim, padding_idx):
-        super(WordEmbedding, self).__init__()
-        self.vocab_size = vocab_size
-        self.dim = dim
-        self.padding_idx = padding_idx
-        self.weight = nn.Parameter(torch.randn(self.vocab_size, self.dim))
-        if self.padding_idx is not None:
-            with torch.no_grad():
-                self.weight[self.padding_idx].fill_(0)
-    
-    def embed(self, tenosr):
-        return torch.matmul(F.one_hot(tenosr, num_classes=self.vocab_size).type(torch.float32), self.weight)
-    
-    def fc(self, tensor):
-        return torch.matmul(tensor, self.weight.t())
 
 class DecoderLayer(Module):
-    def __init__(self, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1):
+    def __init__(self, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1, self_att_module=None,
+                 enc_att_module=None, self_att_module_kwargs=None, enc_att_module_kwargs=None):
         super(DecoderLayer, self).__init__()
-        self.self_att = MultiHeadAttention(d_model, d_k, d_v, h, dropout, can_be_stateful=True)
-        self.enc_att = MultiHeadAttention(d_model, d_k, d_v, h, dropout, can_be_stateful=False)
+        self.self_att = MultiHeadAttention(d_model, d_k, d_v, h, dropout, can_be_stateful=True,
+                                           attention_module=self_att_module,
+                                           attention_module_kwargs=self_att_module_kwargs)
+        self.enc_att = MultiHeadAttention(d_model, d_k, d_v, h, dropout, can_be_stateful=False,
+                                          attention_module=enc_att_module,
+                                          attention_module_kwargs=enc_att_module_kwargs)
 
         self.dropout1 = nn.Dropout(dropout)
         self.lnorm1 = nn.LayerNorm(d_model)
@@ -54,13 +44,11 @@ class TransformerDecoder(Module):
     def __init__(self, vocab_size, max_len, N_dec, padding_idx, d_model=512, d_k=64, d_v=64, h=8, d_ff=2048, dropout=.1,
                  self_att_module=None, enc_att_module=None, self_att_module_kwargs=None, enc_att_module_kwargs=None):
         super(TransformerDecoder, self).__init__()
-        print(vocab_size)
         self.d_model = d_model
         self.word_emb = nn.Embedding(vocab_size, d_model, padding_idx=padding_idx)
-        # self.word_emb = WordEmbedding(vocab_size, d_model, padding_idx)
         self.pos_emb = nn.Embedding.from_pretrained(sinusoid_encoding_table(max_len + 1, d_model, 0), freeze=True)
         self.layers = ModuleList(
-            [DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout) for _ in range(N_dec)])
+            [DecoderLayer(d_model, d_k, d_v, h, d_ff, dropout, self_att_module=self_att_module, enc_att_module=enc_att_module, self_att_module_kwargs=self_att_module_kwargs, enc_att_module_kwargs=enc_att_module_kwargs) for _ in range(N_dec)])
         self.fc = nn.Linear(d_model, vocab_size, bias=False)
         self.max_len = max_len
         self.padding_idx = padding_idx

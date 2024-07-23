@@ -42,7 +42,7 @@ def evaluate_loss(model, dataloader):
                     raise NotImplementedError
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
-                losses = model(feat, mask, labels, tokens_kd)
+                losses = model.forward_gt(feat, mask, labels, tokens_kd)
 
                 loss = 0
                 for v in losses.values():
@@ -69,7 +69,7 @@ def evaluate_metrics(model, dataloader, text_field):
     gts = {}
     with tqdm(desc='Epoch %d - evaluation' % e, unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
-            samples, labels, caps_gt = batch['samples'], batch['labels'], batch['caps_gt']
+            samples, labels, tokens_kd, caps_gt = batch['samples'], batch['labels'], batch['tokens_kd'], batch['caps_gt']
             if args.origin_fea == "swin_dert_grid":
                 feat, mask = samples["grid_sd"].to(device), samples["grid_sd_mask"].to(device)
             elif args.origin_fea == "swin_dert_region":
@@ -78,8 +78,10 @@ def evaluate_metrics(model, dataloader, text_field):
                 feat, mask = samples["region_ud"].to(device), None
             else:
                 raise NotImplementedError
+            labels = labels.to(device)
+            tokens_kd = tokens_kd.to(device)
             with torch.no_grad():
-                logit = model.infer(feat, mask)
+                logit = model.forward_gt(feat, mask, labels, tokens_kd, training=False)
             
             _, out = torch.max(logit, -1)
             caps_gen = text_field.decode(out, join_words=False, deduplication=True)
@@ -118,7 +120,7 @@ def train_xe(model, dataloader, optim, text_field):
                 labels = labels.to(device)
                 tokens_kd = tokens_kd.to(device)
             
-                losses = model(feat, mask, labels, tokens_kd, ratio)
+                losses = model.forward_gt(feat, mask, labels, tokens_kd)
                 # print(losses)
                 optim.zero_grad()
                 loss = 0
@@ -145,156 +147,38 @@ def train_xe(model, dataloader, optim, text_field):
     loss = running_loss / len(dataloader)
     return loss
 
-def train_scst(model, dataloader, optim, cider, text_field):
-    # Training with self-critical
-    tokenizer_pool = multiprocessing.Pool()
-    running_reward = .0
-    running_reward_baseline = .0
-    model.train()
-    running_loss = .0
-    beam_size = 1
-    seq_len = 20
-
-    with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
-        for it, batch in enumerate(dataloader):
-            image_id, samples, caps_gt = batch['image_id'], batch['samples'], batch['caps_gt']
-            samples['grid'] = samples['grid'].to(device)
-            samples['mask'] = samples['mask'].to(device)
-            _, logit = model(samples)
-            batch_size = logit.shape[0]
-            max_len = logit.shape[1]
-            optim.zero_grad()
-
-            sents_logprobs, sents = torch.topk(logit, 2)
-        
-            sents_copy = sents[:,:,:1].squeeze(-1)
-            caps_gen = text_field.decode(sents_copy.view(-1, sents_copy.shape[-1]), deduplication=True)
-            caps_gt1 = caps_gt
-            caps_gen, caps_gt1 = tokenizer_pool.map(evaluation.PTBTokenizer.tokenize, [caps_gen, caps_gt1])
-            rewards_sample = cider.compute_score(caps_gt1, caps_gen)[1].astype(np.float32)
-            rewards_sample = torch.from_numpy(rewards_sample).to(device).reshape(batch_size, 1).repeat(1, seq_len)
-
-            sents_0 = sents[:,:,:1].squeeze(-1).unsqueeze(1).repeat(1, seq_len, 1)
-            sents_1 = sents[:,:,1:].squeeze(-1).unsqueeze(1).repeat(1, seq_len, 1)
-            x_1 = torch.eye(seq_len).to(device).unsqueeze(0).unsqueeze(0)
-            x_0 = torch.where(x_1==1, 0, 1)
-            sents_re = sents_0*x_0 + sents_1*x_1
-            caps_re = text_field.decode(sents_re.view(-1, sents_re.shape[-1]), deduplication=True)
-            caps_gt2 = list(itertools.chain(*([c, ] * seq_len for c in caps_gt)))
-            caps_re, caps_gt2 = tokenizer_pool.map(evaluation.PTBTokenizer.tokenize, [caps_re, caps_gt2])
-            rewards_re = cider.compute_score(caps_gt2, caps_re)[1].astype(np.float32)
-            rewards_re = torch.from_numpy(rewards_re).to(device).reshape(batch_size, seq_len)
-
-            sents_logprobs_0 = sents_logprobs[:,:,:1].squeeze(-1)
-            sents_logprobs_1 = sents_logprobs[:,:,1:].squeeze(-1)
-            reward_baseline = (sents_logprobs_0*rewards_sample + sents_logprobs_1*rewards_re)/(sents_logprobs_0+sents_logprobs_1)
-            loss = - sents_logprobs_0 * (rewards_sample - reward_baseline)
-            loss = loss.mean()
-
-            loss.backward()
-            optim.step()
-
-            running_loss += loss.item()
-            running_reward += rewards_sample.mean().item()
-            running_reward_baseline += reward_baseline.mean().item()
-            pbar.set_postfix(loss=running_loss / (it + 1), reward=running_reward / (it + 1),
-                             reward_baseline=running_reward_baseline / (it + 1))
-            pbar.update()
-            if test:
-                break
-
-    loss = running_loss / len(dataloader)
-    reward = running_reward / len(dataloader)
-    reward_baseline = running_reward_baseline / len(dataloader)
-    return loss, reward, reward_baseline
-
-def train_scst1(model, dataloader, optim, cider, text_field):
-    # Training with self-critical
-    tokenizer_pool = multiprocessing.Pool()
-    running_reward = .0
-    running_reward_baseline = .0
-    model.train()
-    running_loss = .0
-    beam_size = 1
-    seq_len = 20
-
-    with tqdm(desc='Epoch %d - train' % e, unit='it', total=len(dataloader)) as pbar:
-        for it, batch in enumerate(dataloader):
-            image_id, samples, caps_gt = batch['image_id'], batch['samples'], batch['caps_gt']
-            samples['grid'] = samples['grid'].to(device)
-            samples['mask'] = samples['mask'].to(device)
-            _, logit = model(samples)
-            batch_size = logit.shape[0]
-            max_len = logit.shape[1]
-            optim.zero_grad()
-
-
-            logit_e = torch.exp(logit)
-            h = -torch.sum(logit_e * logit, -1)
-            _, id_re = torch.max(h, -1)
-
-            sents_logprobs, sents = torch.topk(logit, 2)
-        
-            sents_copy = sents[:,:,:1].squeeze(-1)
-            caps_gen = text_field.decode(sents_copy.view(-1, sents_copy.shape[-1]), deduplication=True)
-            caps_gt1 = caps_gt
-            caps_gen, caps_gt1 = tokenizer_pool.map(evaluation.PTBTokenizer.tokenize, [caps_gen, caps_gt1])
-            rewards_sample = cider.compute_score(caps_gt1, caps_gen)[1].astype(np.float32)
-            rewards_sample = torch.from_numpy(rewards_sample).to(device)
-
-            sents_0 = sents[:,:,:1].squeeze(-1)
-            sents_1 = sents[:,:,1:].squeeze(-1)
-            x_1 = F.one_hot(id_re, num_classes=seq_len)
-            x_0 = torch.where(x_1==1, 0, 1)
-            sents_re = sents_0*x_0 + sents_1*x_1
-            caps_re = text_field.decode(sents_re.view(-1, sents_re.shape[-1]), deduplication=True)
-            caps_gt2 = caps_gt
-            caps_re, caps_gt2 = tokenizer_pool.map(evaluation.PTBTokenizer.tokenize, [caps_re, caps_gt2])
-            rewards_re = cider.compute_score(caps_gt2, caps_re)[1].astype(np.float32)
-            rewards_re = torch.from_numpy(rewards_re).to(device)
-
-            sents_logprobs_0 = torch.gather(sents_logprobs[:,:,:1].squeeze(-1), dim=1, index=id_re.unsqueeze(0)).squeeze()
-            sents_logprobs_1 = torch.gather(sents_logprobs[:,:,1:].squeeze(-1), dim=1, index=id_re.unsqueeze(0)).squeeze()
-            reward_baseline = (sents_logprobs_0*rewards_sample + sents_logprobs_1*rewards_re)/(sents_logprobs_0+sents_logprobs_1)
-            loss = - sents_logprobs_0 * (rewards_sample - reward_baseline)
-            loss = loss.mean()
-
-            loss.backward()
-            optim.step()
-
-            running_loss += loss.item()
-            running_reward += rewards_sample.mean().item()
-            running_reward_baseline += reward_baseline.mean().item()
-            pbar.set_postfix(loss=running_loss / (it + 1), reward=running_reward / (it + 1),
-                             reward_baseline=running_reward_baseline / (it + 1))
-            pbar.update()
-            if test:
-                break
-
-    loss = running_loss / len(dataloader)
-    reward = running_reward / len(dataloader)
-    reward_baseline = running_reward_baseline / len(dataloader)
-    return loss, reward, reward_baseline
-
+def load_weights(model, fname):
+    data = torch.load(fname)
+    torch.set_rng_state(data['torch_rng_state'])
+    torch.cuda.set_rng_state(data['cuda_rng_state'])
+    np.random.set_state(data['numpy_rng_state'])
+    random.setstate(data['random_rng_state'])
+    model.load_state_dict(data['state_dict'], strict=False)
+    optim.load_state_dict(data['optimizer'])
+    scheduler.load_state_dict(data['scheduler'])
+    scheduler.step()
+    print('Resuming from epoch %d, patience %d, validation loss %f, and best cider %f' % (
+        data['epoch'], data['patience'], data['val_loss'], data['best_cider']))
+    
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='NAICDM')
     parser.add_argument('--rank', type=str, default='0')
-    parser.add_argument('--exp_mode', type=str, default='naicdm_wordemb')
-    parser.add_argument('--exp_name', type=str, default='kd_sdg_wo_embfc')
+    parser.add_argument('--exp_mode', type=str, default='naicdm')
+    parser.add_argument('--exp_name', type=str, default='step2')
     parser.add_argument('--log_folder', type=str, default='./logs')
     parser.add_argument('--data_path', type=str, default='../mscoco')
     parser.add_argument('--origin_cap', type=str, default='transformer')
-    parser.add_argument('--origin_fea', type=str, default='swin_dert_grid')
+    parser.add_argument('--origin_fea', type=str, default='up_down_36')
     parser.add_argument('--use_cache', action='store_true', default='True')
     parser.add_argument('--resume_last', action='store_true')
     parser.add_argument('--resume_best', action='store_true')
     parser.add_argument('--test', action='store_true')
 
-    parser.add_argument('--batch_size', type=int, default=128)
-    parser.add_argument('--workers', type=int, default=8)
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--num_timesteps', type=int, default=100)
     parser.add_argument('--sample_timesteps', type=int, default=100)
-    parser.add_argument('--loop', type=int, default=10)
+    parser.add_argument('--loop', type=int, default=1)
     parser.add_argument('--learning_rate', type=float, default=0.0001)
     parser.add_argument('--epoch1', type=int, default=100)
     parser.add_argument('--epoch2', type=int, default=200)
@@ -303,6 +187,7 @@ if __name__ == '__main__':
     parser.add_argument('--layer_num', type=int, default=3)
     parser.add_argument('--feat_dim', type=int, default=1024)
     parser.add_argument('--seq_len', type=int, default=20)
+    parser.add_argument('--topk', type=int, default=20)
     args = parser.parse_args()
     if args.test:
         args.batch_size = 4
@@ -326,7 +211,7 @@ if __name__ == '__main__':
         args.feat_dim = 2048
     else:
         raise NotImplementedError
-    model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.seq_len, \
+    model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.topk, \
                         args.num_timesteps, args.sample_timesteps,\
                         N_en=args.layer_num, N_wo=args.layer_num, N_de=args.layer_num).to(device)
     model.tensor_to(device)
@@ -376,26 +261,12 @@ if __name__ == '__main__':
     print("Training starts")
     for e in range(start_epoch, start_epoch + 100):
         print("Epoch: %d, Learning Rate: %f" % (e, optim.param_groups[0]['lr']))
-        if e<10:
-            ratio = 0.1 * (10 - e)
-        else:
-            ratio = 0
-        print("Epoch: %d, Learning Rate: %f, Ratio: %f" % (e, optim.param_groups[0]['lr'], ratio))
-        if not use_rl:
-            train_loss = train_xe(model, dataloaders['train'], optim, text_field)
-            writer.add_scalar('data/train_loss', train_loss, e)
-        else:
-            train_loss, reward, reward_baseline = train_scst(model, dataloaders['train'], optim, cider_train, text_field)
-            writer.add_scalar('data/train_loss', train_loss, e)
-            writer.add_scalar('data/reward', reward, e)
-            writer.add_scalar('data/reward_baseline', reward_baseline, e)
+        train_loss = train_xe(model, dataloaders['train'], optim, text_field)
+        writer.add_scalar('data/train_loss', train_loss, e)
             
-        if not use_rl:
-            # Validation loss
-            val_loss = evaluate_loss(model, dataloaders['valid'])
-            writer.add_scalar('data/val_loss', val_loss, e)
-        else:
-            val_loss = 0.0
+        # Validation loss
+        val_loss = evaluate_loss(model, dataloaders['valid'])
+        writer.add_scalar('data/val_loss', val_loss, e)
 
         # Validation scores
         scores = evaluate_metrics(model, dataloaders['val_test'], text_field)
@@ -425,11 +296,21 @@ if __name__ == '__main__':
             best = True
         else:
             patience += 1
-
+            
         exit_train = False
         if patience == args.patience:
-            print('patience reached.')
-            exit_train = True
+            if args.epoch1==100:
+                args.epoch1 = e-5
+                fname = os.path.join(args.model_path, '%s_best.pth' % args.exp_mode)
+                load_weights(model, fname)
+            else:
+                if args.epoch2==200:
+                    args.epoch2 = e-5
+                    fname = os.path.join(args.model_path, '%s_best.pth' % args.exp_mode)
+                    load_weights(model, fname)
+                else:
+                    print('patience reached.')
+                    exit_train = True
 
         if not os.path.isdir(args.model_path):
             os.makedirs(args.model_path)

@@ -325,7 +325,7 @@ def build_coco_dataloaders(data_path, batch_size, num_workers, origin_cap='trans
     return dataloaders, text_field, stop_words
 
 def build_coco_dataloaders_test4w(root_path="../mscoco", vocab_path="../mscoco/txt/coco_vocabulary.txt"):
-    text_field = TextField(vocab_path=vocab_path)
+    text_field = TextField(vocab_path=vocab_path, vocab_s_path="../mscoco/txt/se_labels.txt")
 
     ids_test4w = load_txt(os.path.join(root_path, 'txt', 'coco_test4w_image_id.txt'))
     samples4w = []

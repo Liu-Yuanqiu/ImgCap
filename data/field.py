@@ -63,7 +63,7 @@ class TextField:
         self.pad_first = pad_first
         self.truncate_first = truncate_first
         self.vocab = Vocab(vocab_path=vocab_path, tokens=["<unk>", "<pad>", "<bos>", "<eos>"])
-        self.vocab_s = Vocab(vocab_path=vocab_s_path, tokens=["<unk>"])
+        # self.vocab_s = Vocab(vocab_path=vocab_s_path, tokens=["<unk>"])
         if nopoints:
             self.punctuations.append("..")
 

@@ -193,7 +193,7 @@ class COCO:
             anns = [an["caption"] for an in anns]
             if use_cache:
                 # filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id_val)+".npz")
-                filepath = os.path.join(root_path, "feature", "up_down_36", str(id_train)+".npz")
+                filepath = os.path.join(root_path, "feature", "up_down_36", str(id_val)+".npz")
             else:
                 filename = "COCO_val2014_"+"0"*(12-len(str(id_val)))+str(id_val)+".jpg"
                 filepath = os.path.join(root_path, "feature", "coco2014", "val2014", filename)
@@ -207,7 +207,7 @@ class COCO:
             anns = [an["caption"] for an in anns]
             if use_cache:
                 # filepath = os.path.join(root_path, "feature", "swin_dert_grid", str(id_test)+".npz")
-                filepath = os.path.join(root_path, "feature", "up_down_36", str(id_train)+".npz")
+                filepath = os.path.join(root_path, "feature", "up_down_36", str(id_test)+".npz")
             else:
                 filename = "COCO_val2014_"+"0"*(12-len(str(id_test)))+str(id_test)+".jpg"
                 filepath = os.path.join(root_path, "feature", "coco2014", "val2014", filename)

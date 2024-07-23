@@ -142,16 +142,11 @@ class Transformer(nn.Module):
         elif self.objective == 'pred_v':
             ew_v = self.predict_v(gt_topk_emb, ew_batch_times, ew_noise)
             ew_target = ew_v
-
-        if torch.rand(1).item() < ratio:
-            outwd = gt_topk_emb
-        else:
-            outwd = outw
             
         pos_indx = torch.arange(1, self.topk + 1, device=device).view(1, -1)
         out = self.de_pos_emb(pos_indx).repeat(bs, 1, 1)
         for layer in self.de:
-            out = layer(out, outwd, feat, feat_mask)
+            out = layer(out, outw, feat, feat_mask)
         logit = self.de_fc(out)
         
         logP = F.log_softmax(logit.view(-1, logit.shape[-1]), dim=-1) 
@@ -234,6 +229,35 @@ class Transformer(nn.Module):
             out = layer(out, outw, feat, feat_mask)
         logit = self.de_fc(out)
         return F.log_softmax(logit, dim=-1)
+    
+    def forward_gt(self, feat, feat_mask, labels, tokens_kd, training=True):
+        bs = feat.shape[0]
+        device = feat.device
+        losses = {}
+        feat = self.ei_image_emb(feat)
+        for layer in self.ei:
+            feat = layer(feat, feat, feat, feat_mask)
+
+        _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
+        gt_topk_emb = self.de_word_emb(gt_topk)
+
+        pos_indx = torch.arange(1, self.topk + 1, device=device).view(1, -1)
+        out = self.de_pos_emb(pos_indx).repeat(bs, 1, 1)
+        for layer in self.de:
+            out = layer(out, gt_topk_emb, feat, feat_mask)
+        logit = self.de_fc(out)
+        
+        logP = F.log_softmax(logit.view(-1, logit.shape[-1]), dim=-1)
+        if training==False:
+            return F.log_softmax(logit, dim=-1)
+        assign_seq = tokens_kd.view(-1)
+        assign_seq[assign_seq < 3] = 0
+        size = logP.size(1)
+        true_dist = logP.clone()
+        true_dist.fill_(self.label_smoothing / (size - 1))
+        true_dist.scatter_(1, assign_seq.data.unsqueeze(1), self.confidence)
+        losses.update({"de_ce": self.kl_loss(logP, true_dist).sum(1).mean()})
+        return losses
     
 class WordEmbedding(nn.Module):
     def __init__(self, vocab_size, dim, padding_idx):

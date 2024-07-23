@@ -36,10 +36,12 @@ def evaluate_loss(model, dataloader, loss_fn, text_field):
             for it, batch in enumerate(dataloader):
                 image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
                 samples['grid'] = samples['grid'].to(device)
-                if samples['mask'] is not None:
+                if samples['mask'] is None:
+                    samples['mask'] = torch.zeros(samples['grid'].shape[:2], dtype=torch.bool, device=device).unsqueeze(1).unsqueeze(1)
+                else:
                     samples['mask'] = samples['mask'].to(device)
                 captions = captions.to(device)
-                out = model(samples, captions)
+                out = model(samples['grid'], captions)
                 captions = captions[:, 1:].contiguous()
                 out = out[:, :-1].contiguous()
                 loss = loss_fn(out.view(-1, len(text_field.vocab)), captions.view(-1))
@@ -65,13 +67,16 @@ def evaluate_metrics(model, dataloader, text_field):
         for it, batch in enumerate(dataloader):
             image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
             samples['grid'] = samples['grid'].to(device)
-            if samples['mask'] is not None:
+            if samples['mask'] is None:
+                samples['mask'] = torch.zeros(samples['grid'].shape[:2], dtype=torch.bool, device=device).unsqueeze(1).unsqueeze(1)
+            else:
                 samples['mask'] = samples['mask'].to(device)
             # captions = captions.to(device)
             with torch.no_grad():
-                out, _ = model.beam_search(samples, 20, text_field.vocab.stoi['<eos>'], 5, out_size=1)
+                out, _ = model.beam_search(samples['grid'], 20, text_field.vocab.stoi['<eos>'], 5, out_size=1)
             caps_gen = text_field.decode(out, join_words=False)
             caps_gt = captions
+            
             for i, (gts_i, gen_i) in enumerate(zip(caps_gt, caps_gen)):
                 gen_i = ' '.join([k for k, g in itertools.groupby(gen_i)])
                 gen['%d_%d' % (it, i)] = [gen_i, ]
@@ -92,10 +97,12 @@ def train_xe(model, dataloader, optim, text_field):
         for it, batch in enumerate(dataloader):
             image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
             samples['grid'] = samples['grid'].to(device)
-            if samples['mask'] is not None:
+            if samples['mask'] is None:
+                samples['mask'] = torch.zeros(samples['grid'].shape[:2], dtype=torch.bool, device=device).unsqueeze(1).unsqueeze(1)
+            else:
                 samples['mask'] = samples['mask'].to(device)
             captions = captions.to(device)
-            out = model(samples, captions)
+            out = model(samples['grid'], captions)
             optim.zero_grad()
             captions_gt = captions[:, 1:].contiguous()
             out = out[:, :-1].contiguous()
@@ -112,7 +119,7 @@ def train_xe(model, dataloader, optim, text_field):
 
             if test:
                 break
-    
+            
     loss = running_loss / len(dataloader)
     return loss
 
@@ -131,7 +138,10 @@ def train_scst(model, dataloader, optim, cider, text_field):
         for it, batch in enumerate(dataloader):
             image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
             samples['grid'] = samples['grid'].to(device)
-            samples['mask'] = samples['mask'].to(device)
+            if samples['mask'] is None:
+                samples['mask'] = torch.zeros(samples['grid'].shape[:2], dtype=torch.bool, device=device).unsqueeze(1).unsqueeze(1)
+            else:
+                samples['mask'] = samples['mask'].to(device)
             # captions = captions.to(device)
             outs, log_probs = model.beam_search(samples, seq_len, text_field.vocab.stoi['<eos>'],
                                                 beam_size, out_size=beam_size)
@@ -169,7 +179,7 @@ def train_scst(model, dataloader, optim, cider, text_field):
 if __name__ == '__main__':
     args = OmegaConf.load('configs/transformer.yaml')
     print(args)
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     device = torch.device('cuda')
     multiprocessing.set_start_method('spawn')
     
@@ -186,7 +196,7 @@ if __name__ == '__main__':
             detector = build_detector(args)
         encoder = TransformerEncoder(3, text_field.vocab.stoi['<pad>'])
         decoder = TransformerDecoder(len(text_field.vocab), 54, 3, text_field.vocab.stoi['<pad>'])
-        model = Transformer(text_field.vocab.stoi['<bos>'], detector, encoder, decoder).to(device)
+        model = Transformer(text_field.vocab.stoi['<bos>'], encoder, decoder).to(device)
 
     for n, p in model.named_parameters():
         if 'detector' in n:
@@ -198,9 +208,9 @@ if __name__ == '__main__':
             # lr = base_lr / 4
         if s < 3:
             lr = base_lr * (s+1) / 4
-        elif s <= 8:
+        elif s <= 5:
             lr = base_lr
-        elif s <= 12:
+        elif s <= 200:
             lr = base_lr * 0.2
         else:
             lr = base_lr * 0.2 * 0.2
@@ -243,6 +253,7 @@ if __name__ == '__main__':
             model.load_state_dict(data['state_dict'], strict=False)
             optim.load_state_dict(data['optimizer'])
             scheduler.load_state_dict(data['scheduler'])
+            scheduler.step()
             start_epoch = data['epoch'] + 1
             best_cider = data['best_cider']
             patience = data['patience']
