@@ -96,7 +96,6 @@ class Transformer(nn.Module):
 
     def entropy(self, out):
         logit = torch.softmax(self.fc(out), -1)
-        # logit = F.log_softmax(logit, dim=-1)
         h = -torch.sum(logit * torch.log(logit), -1)
         return h
     

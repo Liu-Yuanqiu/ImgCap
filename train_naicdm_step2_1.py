@@ -2,7 +2,7 @@ import random
 import evaluation
 from evaluation import Cider
 from data.dataset_kd import build_coco_dataloaders
-from models.naicdm.naicdm import Transformer
+from models.naicdm.naicdm1 import Transformer
 import torch
 from torch.optim import Adam
 from torch.optim.lr_scheduler import LambdaLR
@@ -151,7 +151,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='NAICDM')
     parser.add_argument('--rank', type=str, default='0')
     parser.add_argument('--exp_mode', type=str, default='naicdm')
-    parser.add_argument('--exp_name', type=str, default='step2_up_down_36')
+    parser.add_argument('--exp_name', type=str, default='step2_up_down_36_1')
     parser.add_argument('--log_folder', type=str, default='./logs')
     parser.add_argument('--data_path', type=str, default='../mscoco')
     parser.add_argument('--origin_cap', type=str, default='up_down_36')

@@ -20,7 +20,7 @@ import multiprocessing
 from shutil import copyfile
 from omegaconf import OmegaConf
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 test = False
 random.seed(1234)
 torch.manual_seed(1234)
@@ -32,8 +32,9 @@ def infer(model, dataloader, text_field):
     with tqdm(desc='infer', unit='it', total=len(dataloader)) as pbar:
         for it, batch in enumerate(dataloader):
             image_id, samples, captions = batch['image_id'], batch['samples'], batch['captions']
+            samples['grid'] = samples['grid'].to(device)
             with torch.no_grad():
-                out, _ = model.beam_search(samples, 20, text_field.vocab.stoi['<eos>'], 5, out_size=1)
+                out, _ = model.beam_search(samples['grid'], 20, text_field.vocab.stoi['<eos>'], 5, out_size=1)
             caps_gen = text_field.decode(out, join_words=True)
             caps_gt = captions
             for i, (id, gts_i, gen_i) in enumerate(zip(image_id, caps_gt, caps_gen)):
@@ -54,16 +55,16 @@ if __name__ == '__main__':
     dataloaders, text_field = build_coco_dataloaders(args, device)
 
     # Model and dataloaders
-    if args.mode == 'transformer':
+    if args.exp_mode == 'transformer':
         if args.dataset.use_cache:
             detector = None
         else:
             detector = build_detector(args)
-        encoder = TransformerEncoder(3, 0, attention_module=ScaledDotProductAttention)
+        encoder = TransformerEncoder(3, text_field.vocab.stoi['<pad>'])
         decoder = TransformerDecoder(len(text_field.vocab), 54, 3, text_field.vocab.stoi['<pad>'])
-        model = Transformer(text_field.vocab.stoi['<bos>'], detector, encoder, decoder).to(device)
+        model = Transformer(text_field.vocab.stoi['<bos>'], encoder, decoder).to(device)
 
-    args.model_path = os.path.join("./ckpts", args.exp_name)
+    args.model_path = os.path.join("./ckpts", args.exp_mode, args.exp_name)
     fname = os.path.join(args.model_path, '%s_best.pth' % args.exp_name)
     assert os.path.exists(fname), "weight is not found"
     data = torch.load(fname)

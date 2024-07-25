@@ -1,7 +1,7 @@
-exp_name: 'up_down_36'
+exp_name: 'swin_dert_grid'
 exp_mode: 'transformer'
 resume_last: false
-resume_best: true
+resume_best: false
 logs_folder: './logs/'
 
 optimizer:

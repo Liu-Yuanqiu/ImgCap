@@ -47,6 +47,7 @@ class Transformer(nn.Module):
         self.de_fc = nn.Linear(d_model, vocab_size)
 
         self.vocab_size = vocab_size
+        self.seq_len = 20
         self.topk = topk
         self.dim = d_model
         self.label_smoothing = 0.1
@@ -143,7 +144,7 @@ class Transformer(nn.Module):
             ew_v = self.predict_v(gt_topk_emb, ew_batch_times, ew_noise)
             ew_target = ew_v
             
-        pos_indx = torch.arange(1, self.topk + 1, device=device).view(1, -1)
+        pos_indx = torch.arange(1, self.seq_len + 1, device=device).view(1, -1)
         out = self.de_pos_emb(pos_indx).repeat(bs, 1, 1)
         for layer in self.de:
             out = layer(out, outw, feat, feat_mask)
@@ -223,7 +224,7 @@ class Transformer(nn.Module):
             ew_x = ew_model_mean + (0.5 * ew_model_log_variance).exp() * ew_noise
         outw = ew_x
 
-        pos_indx = torch.arange(1, self.topk + 1, device=device).view(1, -1)
+        pos_indx = torch.arange(1, self.seq_len + 1, device=device).view(1, -1)
         out = self.de_pos_emb(pos_indx).repeat(bs, 1, 1)
         for layer in self.de:
             out = layer(out, outw, feat, feat_mask)
@@ -241,10 +242,11 @@ class Transformer(nn.Module):
         _, gt_topk = torch.topk(labels, self.topk, dim=1, largest=True, sorted=True)
         gt_topk_emb = self.de_word_emb(gt_topk)
 
-        pos_indx = torch.arange(1, self.topk + 1, device=device).view(1, -1)
+        pos_indx = torch.arange(1, self.seq_len + 1, device=device).view(1, -1)
         out = self.de_pos_emb(pos_indx).repeat(bs, 1, 1)
+        outd = gt_topk_emb
         for layer in self.de:
-            out = layer(out, gt_topk_emb, feat, feat_mask)
+            out = layer(out, outd, feat, feat_mask)
         logit = self.de_fc(out)
         
         logP = F.log_softmax(logit.view(-1, logit.shape[-1]), dim=-1)
@@ -258,6 +260,11 @@ class Transformer(nn.Module):
         true_dist.scatter_(1, assign_seq.data.unsqueeze(1), self.confidence)
         losses.update({"de_ce": self.kl_loss(logP, true_dist).sum(1).mean()})
         return losses
+    
+    def entropy(self, out):
+        logit = torch.softmax(self.de_fc(out), -1)
+        h = -torch.sum(logit * torch.log(logit), -1)
+        return h
     
 class WordEmbedding(nn.Module):
     def __init__(self, vocab_size, dim, padding_idx):

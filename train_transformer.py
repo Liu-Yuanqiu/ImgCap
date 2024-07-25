@@ -143,7 +143,7 @@ def train_scst(model, dataloader, optim, cider, text_field):
             else:
                 samples['mask'] = samples['mask'].to(device)
             # captions = captions.to(device)
-            outs, log_probs = model.beam_search(samples, seq_len, text_field.vocab.stoi['<eos>'],
+            outs, log_probs = model.beam_search(samples['grid'], seq_len, text_field.vocab.stoi['<eos>'],
                                                 beam_size, out_size=beam_size)
             optim.zero_grad()
 
@@ -210,7 +210,7 @@ if __name__ == '__main__':
             lr = base_lr * (s+1) / 4
         elif s <= 5:
             lr = base_lr
-        elif s <= 200:
+        elif s <= 11:
             lr = base_lr * 0.2
         else:
             lr = base_lr * 0.2 * 0.2
@@ -310,23 +310,36 @@ if __name__ == '__main__':
         switch_to_rl = False
         exit_train = False
         if patience == 5:
-            if not use_rl:
-                use_rl = True
-                switch_to_rl = True
+            if args.epoch1==100:
+                args.epoch1 = e
                 patience = 0
-                optim = Adam(model.parameters(), lr=5e-6)
-                print("Switching to RL")
             else:
-                print('patience reached.')
-                exit_train = True
+                if args.epoch2==200:
+                    args.epoch2 = e
+                    patience = 0
+                else:
+                    if not use_rl:
+                        use_rl = True
+                        switch_to_rl = True
+                        patience = 0
+                        optim = Adam(model.parameters(), lr=5e-6)
+                        print("Switching to RL")
+                        xe_path = os.path.join("./ckpts", args.exp_mode, args.exp_name+"_xe")
+                        if not os.path.isdir(xe_path):
+                            os.makedirs(xe_path)
+                        copyfile(os.path.join(args.model_path, '%s_best.pth' % args.exp_name), os.path.join(xe_path, '%s_best.pth' % args.exp_name))
+                        copyfile(os.path.join(args.model_path, '%s_last.pth' % args.exp_name), os.path.join(xe_path, '%s_last.pth' % args.exp_name))
+                    else:
+                        print('patience reached.')
+                        exit_train = True
         #####
-        if not use_rl:
-            if e >= 20:
-                use_rl = True
-                switch_to_rl = True
-                patience = 0
-                optim = Adam(model.parameters(), lr=5e-6)
-                print("Switching to RL")
+        # if not use_rl:
+        #     if e >= 20:
+        #         use_rl = True
+        #         switch_to_rl = True
+        #         patience = 0
+        #         optim = Adam(model.parameters(), lr=5e-6)
+        #         print("Switching to RL")
         #######
 
         if not os.path.isdir(args.model_path):
