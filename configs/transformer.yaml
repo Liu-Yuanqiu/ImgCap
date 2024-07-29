@@ -1,8 +1,10 @@
 exp_name: 'swin_dert_grid'
 exp_mode: 'transformer'
-resume_last: false
+resume_last: true
 resume_best: false
 logs_folder: './logs/'
+epoch1: 18
+epoch2: 200
 
 optimizer:
   batch_size: 32

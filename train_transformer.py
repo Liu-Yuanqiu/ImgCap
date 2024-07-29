@@ -208,9 +208,9 @@ if __name__ == '__main__':
             # lr = base_lr / 4
         if s < 3:
             lr = base_lr * (s+1) / 4
-        elif s <= 5:
+        elif s <= args.epoch1:
             lr = base_lr
-        elif s <= 11:
+        elif s <= args.epoch2:
             lr = base_lr * 0.2
         else:
             lr = base_lr * 0.2 * 0.2

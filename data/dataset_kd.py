@@ -199,6 +199,8 @@ class COCO_KD:
             origin = "captions_kd3.json"
         elif origin_cap=="up_down_36":
             origin = "captions_up_down_36.json"
+        elif origin_cap=="swin_dert_grid":
+            origin = "captions_swin_dert_grid.json"        
         else:
             raise NotImplementedError
         if os.path.exists(os.path.join(root_path, cached_train)):

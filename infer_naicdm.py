@@ -61,8 +61,8 @@ if __name__ == '__main__':
     os.environ["CUDA_VISIBLE_DEVICES"] = "3"
     device = torch.device('cuda')
     multiprocessing.set_start_method('spawn')
-    origin_cap = "transformer"
-    origin_fea = "swin_dert_grid"
+    origin_cap = "up_down_36"
+    origin_fea = "up_down_36"
     if origin_fea == "swin_dert_grid":
         feat_dim = 1024
     elif origin_fea == "swin_dert_region":
@@ -71,7 +71,7 @@ if __name__ == '__main__':
         feat_dim = 2048
     else:
         raise NotImplementedError
-    step = 1
+    step = 100
     root_path = "../mscoco"
     loaders, text_field, stop_words = build_coco_dataloaders(root_path, 64, 4, origin_cap)
     loader4w, load3w, text_field = build_coco_dataloaders_test4w()
@@ -81,8 +81,8 @@ if __name__ == '__main__':
                         20, num_timesteps=step, sampling_timesteps=step,\
                         N_en=3, N_wo=3, N_de=3).to(device)
     model.tensor_to(device)
-    model_path = os.path.join("./ckpts", "naicdm_wordemb", "kd_sdg")
-    fname = os.path.join(model_path, '%s_best.pth' % "naicdm_wordemb")
+    model_path = os.path.join("./ckpts", "naicdm", "up_down_36")
+    fname = os.path.join(model_path, '%s_best.pth' % "naicdm")
     assert os.path.exists(fname), "weight is not found"
     data = torch.load(fname)
     # torch.set_rng_state(data['torch_rng_state'])

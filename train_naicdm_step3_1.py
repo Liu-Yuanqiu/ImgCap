@@ -44,9 +44,10 @@ def evaluate_loss(model, dataloader):
                 tokens_kd = tokens_kd.to(device)
                 losses = model(feat, mask, labels, tokens_kd)
 
-                loss = 0
-                for v in losses.values():
-                    loss += v
+                # loss = 0
+                # for v in losses.values():
+                #     loss += v
+                loss = losses['ew_mse']
                 this_loss = loss.item()
                 running_loss += this_loss
                 losses_info = {}
@@ -121,9 +122,10 @@ def train_xe(model, dataloader, optim, text_field):
                 losses = model(feat, mask, labels, tokens_kd)
                 # print(losses)
                 optim.zero_grad()
-                loss = 0
-                for v in losses.values():
-                    loss += v
+                # loss = 0
+                # for v in losses.values():
+                #     loss += v
+                loss = losses['ew_mse']
                 loss.backward()
 
                 optim.step()
@@ -289,6 +291,7 @@ if __name__ == '__main__':
     parser.add_argument('--resume_step2', action='store_true')
     parser.add_argument('--resume_last', action='store_true')
     parser.add_argument('--resume_best', action='store_true')
+    parser.add_argument('--freeze_ei_de', action='store_true')
     parser.add_argument('--test', action='store_true')
 
     parser.add_argument('--batch_size', type=int, default=128)
@@ -363,6 +366,11 @@ if __name__ == '__main__':
         model.load_state_dict(data['state_dict'], strict=False)
         print("Loaded step2 model from %s, best cider %f" % (fname, data['best_cider']))
 
+    if args.freeze_ei_de:
+        for n, p in model.named_parameters():
+            if "ei" in n or "de" in n:
+                p.requires_grad = False
+        print("Freeze ei and de")
     args.model_path = os.path.join("./ckpts", args.exp_mode, args.exp_name)
     if args.resume_last or args.resume_best:
         if args.resume_last:
