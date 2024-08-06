@@ -26,3 +26,17 @@ python train_naicdm_step3.py --rank 1 --exp_name step3_up_down_36_topk5_step10 -
 python train_naicdm_step3.py --rank 2 --exp_name step3_up_down_36_topk5_step10_wostep2 --topk 5
 
 python train_naicdm_step3_1.py --rank 2 --exp_name step3_up_down_36_topk5_step10_freeze --topk 5 --resume_step2 --freeze_ei_de
+
+
+
+python train_naicdm_step3_h5_layer6.py --rank 1 --exp_name step3_up_down_36_topk10_layer6_step10_bs64 --origin_cap up_down_36 --origin_fea up_down_36 --topk 10 --resume_step2
+
+python train_naicdm_step3_h5_layer6.py --rank 2 --exp_name step3_up_down_36_topk20_layer6_step10_bs64 --origin_cap up_down_36 --origin_fea up_down_36 --topk 20 --resume_step2
+
+3090: step3_up_down_36_topk10_layer6_step10_bs64 (up, bs128) 
+    step3_up_down_36_topk20_layer6_step10_bs64 (down, bs128)
+
+309055: step3_swin_dert_grid_topk20_layer6_step10_bs64 (bs128)
+
+wch: step3_swin_dert_grid_topk10_layer6_step10_bs64 (up)
+    step3_swin_dert_grid_topk5_layer6_step10_bs64 (down)

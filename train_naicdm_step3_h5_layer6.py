@@ -295,7 +295,7 @@ if __name__ == '__main__':
     parser.add_argument('--test', action='store_true')
 
     parser.add_argument('--batch_size', type=int, default=128)
-    parser.add_argument('--workers', type=int, default=8)
+    parser.add_argument('--workers', type=int, default=16)
     parser.add_argument('--num_timesteps', type=int, default=10)
     parser.add_argument('--sample_timesteps', type=int, default=10)
     parser.add_argument('--loop', type=int, default=10)
@@ -304,7 +304,7 @@ if __name__ == '__main__':
     parser.add_argument('--epoch2', type=int, default=200)
     parser.add_argument('--patience', type=int, default=5)
 
-    parser.add_argument('--layer_num', type=int, default=3)
+    parser.add_argument('--layer_num', type=int, default=6)
     parser.add_argument('--feat_dim', type=int, default=1024)
     parser.add_argument('--seq_len', type=int, default=20)
     parser.add_argument('--topk', type=int, default=5)
@@ -333,7 +333,7 @@ if __name__ == '__main__':
         raise NotImplementedError
     model = Transformer(args.feat_dim, len(text_field.vocab), text_field.vocab.stoi['<pad>'], args.topk, \
                         args.num_timesteps, args.sample_timesteps,\
-                        N_en=args.layer_num, N_wo=args.layer_num*2, N_de=args.layer_num).to(device)
+                        N_en=args.layer_num, N_wo=args.layer_num, N_de=args.layer_num).to(device)
     model.tensor_to(device)
     def lambda_lr(s):
         base_lr = args.learning_rate
@@ -356,13 +356,13 @@ if __name__ == '__main__':
     use_rl = False
 
     if args.resume_step2:
-        step2_model = "step2_" + args.origin_fea + "_topk" + str(args.topk)
+        step2_model = "step2_" + args.origin_fea + "_topk" + str(args.topk) + "_layer6"
         fname = os.path.join("./ckpts", args.exp_mode, step2_model, '%s_best.pth' % args.exp_mode)
         data = torch.load(fname)
-        torch.set_rng_state(data['torch_rng_state'])
-        torch.cuda.set_rng_state(data['cuda_rng_state'])
-        np.random.set_state(data['numpy_rng_state'])
-        random.setstate(data['random_rng_state'])
+        # torch.set_rng_state(data['torch_rng_state'])
+        # torch.cuda.set_rng_state(data['cuda_rng_state'])
+        # np.random.set_state(data['numpy_rng_state'])
+        # random.setstate(data['random_rng_state'])
         model.load_state_dict(data['state_dict'], strict=False)
         print("Loaded step2 model from %s, best cider %f" % (fname, data['best_cider']))
 

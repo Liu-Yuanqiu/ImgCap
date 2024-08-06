@@ -440,11 +440,21 @@ if __name__ == '__main__':
         exit_train = False
         if patience == args.patience:
             if args.epoch1==100:
-                args.epoch1 = e
+                args.epoch1 = e-5
+                fname = os.path.join(args.model_path, '%s_best.pth' % args.exp_mode)
+                data = torch.load(fname)
+                model.load_state_dict(data['state_dict'], strict=False)
+                optim.load_state_dict(data['optimizer'])
+                scheduler.load_state_dict(data['scheduler'])
                 patience = 0
             else:
                 if args.epoch2==200:
-                    args.epoch2 = e
+                    args.epoch2 = e-5
+                    fname = os.path.join(args.model_path, '%s_best.pth' % args.exp_mode)
+                    data = torch.load(fname)
+                    model.load_state_dict(data['state_dict'], strict=False)
+                    optim.load_state_dict(data['optimizer'])
+                    scheduler.load_state_dict(data['scheduler'])
                     patience = 0
                 else:
                     print('patience reached.')
